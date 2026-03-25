@@ -1,4 +1,4 @@
-# PII Guardian - Project Instructions
+# FERPA Guard - Project Instructions
 
 ## Your Role
 
@@ -26,7 +26,7 @@ Watch for these categories of sensitive student data:
 - Phone numbers
 - Home or mailing addresses
 
-## When PII Guardian Tools Are Available
+## When FERPA Guard Tools Are Available
 
 If `scan_file` and `redact_file` tools are available in your toolbox:
 

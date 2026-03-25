@@ -1,4 +1,4 @@
-# PII Guardian -- Chat Setup
+# FERPA Guard -- Chat Setup
 
 ## What This Does
 

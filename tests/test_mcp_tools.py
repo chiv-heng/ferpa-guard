@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Tests for PII Guardian MCP server tool functions.
+Tests for FERPA Guard MCP server tool functions.
 
 Tests call scan_file and redact_file directly as Python functions
 (they return dicts), not via MCP protocol.
@@ -209,17 +209,17 @@ class TestMCPAuditLog(unittest.TestCase):
         # Create temp audit log path for test isolation
         self.audit_dir = self.tmp / ".claude"
         self.audit_dir.mkdir(parents=True)
-        self.audit_path = self.audit_dir / "pii-guardian-audit.log"
+        self.audit_path = self.audit_dir / "ferpa-guard-audit.log"
         # Monkeypatch AUDIT_LOG_PATH
         self._original_audit_path = server.AUDIT_LOG_PATH
         server.AUDIT_LOG_PATH = self.audit_path
-        # Clear any PII_GUARDIAN_ALLOW env var to avoid interference
-        self._original_allow = os.environ.pop("PII_GUARDIAN_ALLOW", None)
+        # Clear any FERPA_GUARD_ALLOW env var to avoid interference
+        self._original_allow = os.environ.pop("FERPA_GUARD_ALLOW", None)
 
     def tearDown(self):
         server.AUDIT_LOG_PATH = self._original_audit_path
         if self._original_allow is not None:
-            os.environ["PII_GUARDIAN_ALLOW"] = self._original_allow
+            os.environ["FERPA_GUARD_ALLOW"] = self._original_allow
         self.tmpdir.cleanup()
 
     def test_scan_writes_audit_entry(self):
@@ -283,7 +283,7 @@ class TestMCPAuditLog(unittest.TestCase):
 
         import logging
         # Capture log output
-        with self.assertLogs("pii-guardian-mcp", level="INFO") as cm:
+        with self.assertLogs("ferpa-guard-mcp", level="INFO") as cm:
             scan_file(str(csv_path))
 
         # At least one log message should contain AUDIT
@@ -314,19 +314,19 @@ class TestMCPAllowlist(unittest.TestCase):
         # Create temp audit log path for test isolation
         self.audit_dir = self.tmp / ".claude"
         self.audit_dir.mkdir(parents=True)
-        self.audit_path = self.audit_dir / "pii-guardian-audit.log"
+        self.audit_path = self.audit_dir / "ferpa-guard-audit.log"
         # Monkeypatch AUDIT_LOG_PATH
         self._original_audit_path = server.AUDIT_LOG_PATH
         server.AUDIT_LOG_PATH = self.audit_path
-        # Clear any existing PII_GUARDIAN_ALLOW env var
-        self._original_allow = os.environ.pop("PII_GUARDIAN_ALLOW", None)
+        # Clear any existing FERPA_GUARD_ALLOW env var
+        self._original_allow = os.environ.pop("FERPA_GUARD_ALLOW", None)
 
     def tearDown(self):
         server.AUDIT_LOG_PATH = self._original_audit_path
         if self._original_allow is not None:
-            os.environ["PII_GUARDIAN_ALLOW"] = self._original_allow
+            os.environ["FERPA_GUARD_ALLOW"] = self._original_allow
         else:
-            os.environ.pop("PII_GUARDIAN_ALLOW", None)
+            os.environ.pop("FERPA_GUARD_ALLOW", None)
         self.tmpdir.cleanup()
 
     def test_allowlisted_file_bypasses_scan(self):
@@ -335,7 +335,7 @@ class TestMCPAllowlist(unittest.TestCase):
         csv_path.write_text(_SSN_CSV_10_ROWS)
 
         # Put the file on the allowlist via env var
-        os.environ["PII_GUARDIAN_ALLOW"] = str(csv_path)
+        os.environ["FERPA_GUARD_ALLOW"] = str(csv_path)
 
         result = scan_file(str(csv_path))
 
@@ -351,7 +351,7 @@ class TestMCPAllowlist(unittest.TestCase):
         csv_path.write_text(_SSN_CSV_10_ROWS)
 
         # Allowlist the directory, not the specific file
-        os.environ["PII_GUARDIAN_ALLOW"] = str(subdir)
+        os.environ["FERPA_GUARD_ALLOW"] = str(subdir)
 
         result = scan_file(str(csv_path))
 
@@ -364,7 +364,7 @@ class TestMCPAllowlist(unittest.TestCase):
         csv_path.write_text(_SSN_CSV_10_ROWS)
 
         # Ensure allowlist is empty
-        os.environ.pop("PII_GUARDIAN_ALLOW", None)
+        os.environ.pop("FERPA_GUARD_ALLOW", None)
 
         result = scan_file(str(csv_path))
 
@@ -377,7 +377,7 @@ class TestMCPAllowlist(unittest.TestCase):
         csv_path.write_text(_SSN_CSV_10_ROWS)
 
         # Put the file on the allowlist
-        os.environ["PII_GUARDIAN_ALLOW"] = str(csv_path)
+        os.environ["FERPA_GUARD_ALLOW"] = str(csv_path)
 
         result = redact_file(str(csv_path))
 
@@ -396,14 +396,14 @@ class TestMCPAllowlist(unittest.TestCase):
         csv_path = self.tmp / "students.csv"
         csv_path.write_text(_SSN_CSV_10_ROWS)
 
-        os.environ["PII_GUARDIAN_ALLOW"] = str(csv_path)
+        os.environ["FERPA_GUARD_ALLOW"] = str(csv_path)
 
         scan_file(str(csv_path))
 
         self.assertTrue(self.audit_path.exists())
         content = self.audit_path.read_text()
         self.assertIn("allow_bypass", content)
-        self.assertIn("env(PII_GUARDIAN_ALLOW)", content)
+        self.assertIn("env(FERPA_GUARD_ALLOW)", content)
 
 
 class TestNoStdoutCorruption(unittest.TestCase):

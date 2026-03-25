@@ -1,4 +1,4 @@
-# PII Guardian -- Chat Test Scenarios
+# FERPA Guard -- Chat Test Scenarios
 
 Manual test scenarios for validating Claude Chat custom instructions. Each scenario should be tested by pasting the input into a Claude Chat project configured with the custom instructions from `CUSTOM-INSTRUCTIONS.md`.
 

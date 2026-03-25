@@ -1,4 +1,4 @@
-# PII Guardian -- Cowork Setup
+# FERPA Guard -- Cowork Setup
 
 ## Quick Start (Instructions-Only Mode)
 
@@ -31,7 +31,7 @@ Add to your Claude Desktop MCP config (`claude_desktop_config.json`):
 ```json
 {
   "mcpServers": {
-    "pii-guardian": {
+    "ferpa-guard": {
       "command": "python3",
       "args": ["<project-root>/cowork/mcp_server.py"]
     }
@@ -39,7 +39,7 @@ Add to your Claude Desktop MCP config (`claude_desktop_config.json`):
 }
 ```
 
-Replace `<project-root>` with the absolute path to your PII-Guardian clone.
+Replace `<project-root>` with the absolute path to your ferpa-guard clone.
 
 ### 3. Verify
 

@@ -176,7 +176,7 @@ def read_text_file(filepath: str) -> str:
             # Check if file had more content beyond the limit
             if f.read(1):
                 print(
-                    f"PII GUARDIAN: Scanned first {MAX_SCAN_BYTES} bytes of {filepath}. "
+                    f"FERPA GUARD: Scanned first {MAX_SCAN_BYTES} bytes of {filepath}. "
                     "Content beyond that limit was not checked.",
                     file=sys.stderr,
                 )
@@ -260,7 +260,7 @@ def read_xlsx_file(filepath: str) -> ScanInput:
             if cell_count >= MAX_XLSX_CELLS:
                 lines.append(f"[Scan limit reached: {MAX_XLSX_CELLS} cells]")
                 print(
-                    f"PII GUARDIAN: Scanned first {MAX_XLSX_CELLS} cells of {filepath}. "
+                    f"FERPA GUARD: Scanned first {MAX_XLSX_CELLS} cells of {filepath}. "
                     "Content beyond that limit was not checked.",
                     file=sys.stderr,
                 )
@@ -294,7 +294,7 @@ def read_pdf_file(filepath: str) -> str:
             if i >= MAX_PDF_PAGES:
                 lines.append(f"[Scan limit reached: {MAX_PDF_PAGES} pages]")
                 print(
-                    f"PII GUARDIAN: Scanned first {MAX_PDF_PAGES} pages of {filepath}. "
+                    f"FERPA GUARD: Scanned first {MAX_PDF_PAGES} pages of {filepath}. "
                     "Content beyond that limit was not checked.",
                     file=sys.stderr,
                 )
@@ -357,7 +357,7 @@ def read_docx_file(filepath: str) -> str:
 
     if scan_limited:
         print(
-            f"PII GUARDIAN: Scanned first {MAX_SCAN_BYTES} bytes of {filepath}. "
+            f"FERPA GUARD: Scanned first {MAX_SCAN_BYTES} bytes of {filepath}. "
             "Content beyond that limit was not checked.",
             file=sys.stderr,
         )

@@ -67,7 +67,7 @@ except ImportError:
 
 # Suppress MCP server logging to keep test output clean
 if _MCP_AVAILABLE:
-    logging.getLogger("pii-guardian-mcp").setLevel(logging.CRITICAL)
+    logging.getLogger("ferpa-guard-mcp").setLevel(logging.CRITICAL)
 
 # ---------------------------------------------------------------------------
 # Shared synthetic PII fixture
@@ -181,7 +181,7 @@ class TestAuditLogIntegration(unittest.TestCase):
 
     def test_both_surfaces_write_to_same_audit_log(self):
         """Hook allowlist bypass (ALLOW) and MCP scan (SCAN) both appear in audit log."""
-        audit_log = Path.home() / ".claude" / "pii-guardian-audit.log"
+        audit_log = Path.home() / ".claude" / "ferpa-guard-audit.log"
 
         # Ensure ~/.claude/ directory exists
         audit_log.parent.mkdir(parents=True, exist_ok=True)
@@ -193,7 +193,7 @@ class TestAuditLogIntegration(unittest.TestCase):
         _run_hook(
             "Read",
             {"file_path": FIXTURE_PATH},
-            env_extra={"PII_GUARDIAN_ALLOW": FIXTURE_PATH},
+            env_extra={"FERPA_GUARD_ALLOW": FIXTURE_PATH},
         )
 
         # MCP scan writes SCAN entry (only if MCP is available)
@@ -244,7 +244,7 @@ class TestInstallScript(unittest.TestCase):
         try:
             self.assertEqual(result.returncode, 0, f"install.sh failed:\n{result.stderr}")
 
-            dest = Path(fake_home) / ".claude" / "skills" / "pii-guardian"
+            dest = Path(fake_home) / ".claude" / "skills" / "ferpa-guard"
             self.assertTrue(
                 (dest / "scripts" / "pii_guardian.py").exists(),
                 "pii_guardian.py not found in install destination",
@@ -261,7 +261,7 @@ class TestInstallScript(unittest.TestCase):
             shutil.rmtree(fake_home)
 
     def test_fresh_install_settings_json(self):
-        """install.sh creates settings.json with PII Guardian hook registered."""
+        """install.sh creates settings.json with FERPA Guard hook registered."""
         result, fake_home = self._run_install()
         try:
             self.assertEqual(result.returncode, 0, f"install.sh failed:\n{result.stderr}")
@@ -279,8 +279,8 @@ class TestInstallScript(unittest.TestCase):
                 if h.get("hooks")
             ]
             self.assertTrue(
-                any("pii-guardian" in c for c in commands),
-                f"No hook command contains 'pii-guardian'. Commands: {commands}",
+                any("ferpa-guard" in c for c in commands),
+                f"No hook command contains 'ferpa-guard'. Commands: {commands}",
             )
         finally:
             shutil.rmtree(fake_home)

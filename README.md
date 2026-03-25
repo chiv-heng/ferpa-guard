@@ -1,10 +1,10 @@
-# PII Guardian
+# FERPA Guard
 
 K-12 AI safety layer that detects and blocks student PII before it enters LLM context windows. Protects against accidental FERPA/COPPA violations across AI tools that school staff already use.
 
 ## What it does
 
-PII Guardian is a Python script that runs **before** the AI model sees anything. When a user tries to read a file containing student data (roster CSVs, SIS exports, xlsx workbooks), the script intercepts the request, scans for sensitive patterns using regex-based detection, and blocks access before the data enters the LLM context window. No AI is involved in the scanning. It then offers safe alternatives: synthetic data generation, built-in redaction, or column-level filtering.
+FERPA Guard is a Python script that runs **before** the AI model sees anything. When a user tries to read a file containing student data (roster CSVs, SIS exports, xlsx workbooks), the script intercepts the request, scans for sensitive patterns using regex-based detection, and blocks access before the data enters the LLM context window. No AI is involved in the scanning. It then offers safe alternatives: synthetic data generation, built-in redaction, or column-level filtering.
 
 ## Delivery surfaces
 
@@ -25,12 +25,12 @@ Choose the surface that matches how your team uses Claude:
 The strongest protection. A Python hook runs before every file read and **programmatically blocks** access to files with PII. The LLM never sees the data.
 
 ```bash
-git clone https://github.com/chiv-heng/pii-guardian.git
-cd pii-guardian
+git clone https://github.com/chiv-heng/ferpa-guard.git
+cd ferpa-guard
 ./install.sh
 ```
 
-The install script copies the hook to `~/.claude/skills/pii-guardian/`, registers it in `~/.claude/settings.json`, and runs a self-test. To verify, try reading a CSV with student data in a Claude Code session.
+The install script copies the hook to `~/.claude/skills/ferpa-guard/`, registers it in `~/.claude/settings.json`, and runs a self-test. To verify, try reading a CSV with student data in a Claude Code session.
 
 ### Claude Desktop (school ops, admin staff)
 
@@ -43,9 +43,9 @@ Two options, depending on your comfort level:
    ```json
    {
      "mcpServers": {
-       "pii-guardian": {
+       "ferpa-guard": {
          "command": "python3",
-         "args": ["/path/to/pii-guardian/cowork/mcp_server.py"]
+         "args": ["/path/to/ferpa-guard/cowork/mcp_server.py"]
        }
      }
    }
@@ -126,22 +126,22 @@ For known-safe false positives (templates, test data):
 
 **Environment variable:**
 ```bash
-export PII_GUARDIAN_ALLOW="/path/to/safe-template.csv,/path/to/other.json"
+export FERPA_GUARD_ALLOW="/path/to/safe-template.csv,/path/to/other.json"
 ```
 
-**Allowlist file** (`~/.claude/pii-guardian-allow.txt`):
+**Allowlist file** (`~/.claude/ferpa-guard-allow.txt`):
 ```
 # One path per line
 /path/to/safe-template.csv
 /path/to/test-data/
 ```
 
-All bypasses are logged to `~/.claude/pii-guardian-audit.log` for FERPA compliance.
+All bypasses are logged to `~/.claude/ferpa-guard-audit.log` for FERPA compliance.
 
 ## Project structure
 
 ```
-pii-guardian/
+ferpa-guard/
   shared/             # Platform-agnostic detection engine and redactor
     pii_engine.py     # Patterns, readers, scanning, confidence scoring
     pii_redactor.py   # Cell-level redaction for text and xlsx files
@@ -181,7 +181,7 @@ python3 tests/test_pii_guardian.py
 To block on any PII finding regardless of confidence scoring:
 
 ```bash
-export PII_GUARDIAN_STRICT=1
+export FERPA_GUARD_STRICT=1
 ```
 
 ## Privacy

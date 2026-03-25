@@ -38,24 +38,24 @@ from shared.pii_engine import (
 )
 
 
-AUDIT_LOG_PATH = Path.home() / ".claude" / "pii-guardian-audit.log"
+AUDIT_LOG_PATH = Path.home() / ".claude" / "ferpa-guard-audit.log"
 
 
 def _write_audit_entry(original_path: str, resolved_path: str, source: str):
     """Write an audit log entry for an allowlist bypass (FERPA compliance).
 
-    Logs to both stderr and ~/.claude/pii-guardian-audit.log.
+    Logs to both stderr and ~/.claude/ferpa-guard-audit.log.
     Never raises -- file write failures are caught and logged to stderr.
     """
     timestamp = datetime.datetime.now().isoformat(timespec="seconds")
     entry = f"[{timestamp}] ALLOW original={original_path} resolved={resolved_path} source={source}"
-    print(f"PII GUARDIAN AUDIT: {entry}", file=sys.stderr)
+    print(f"FERPA GUARD AUDIT: {entry}", file=sys.stderr)
     try:
         AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(AUDIT_LOG_PATH, "a") as f:
             f.write(entry + "\n")
     except OSError as exc:
-        print(f"PII GUARDIAN AUDIT: failed to write audit log: {exc}", file=sys.stderr)
+        print(f"FERPA GUARD AUDIT: failed to write audit log: {exc}", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +153,7 @@ def format_block_reason(filepath: str, findings: list[dict]) -> str:
 
     # --- Section 1: User-facing message (show verbatim) ---
     user_lines = [
-        f"PII Guardian blocked '{p.name}' because it contains: {', '.join(pii_types)}.",
+        f"FERPA Guard blocked '{p.name}' because it contains: {', '.join(pii_types)}.",
         "FERPA requires written consent before disclosing student education records.",
         "",
         "What was found:",
@@ -186,8 +186,8 @@ def format_block_reason(filepath: str, findings: list[dict]) -> str:
         claude_lines.append(f"  Option 2: Write a redaction script the user can run.")
     claude_lines.append("  Option 3: Ask user which columns are safe, write a filtering script.")
     if critical or high:
-        claude_lines.append(f"  Option 4: Add to allowlist: echo \"{filepath}\" >> ~/.claude/pii-guardian-allow.txt")
-        claude_lines.append(f"            Or env var: export PII_GUARDIAN_ALLOW=\"{filepath}\"")
+        claude_lines.append(f"  Option 4: Add to allowlist: echo \"{filepath}\" >> ~/.claude/ferpa-guard-allow.txt")
+        claude_lines.append(f"            Or env var: export FERPA_GUARD_ALLOW=\"{filepath}\"")
 
     return "\n".join(user_lines + claude_lines)
 
@@ -195,7 +195,7 @@ def format_block_reason(filepath: str, findings: list[dict]) -> str:
 def format_warning(filepath: str, findings: list[dict]) -> str:
     """Format a warning for possible PII (allowed but flagged)."""
     lines = [
-        "PII GUARDIAN: Possible sensitive data (not blocked).",
+        "FERPA GUARD: Possible sensitive data (not blocked).",
         f"File: {filepath}",
     ]
     for f in findings:
@@ -208,7 +208,7 @@ def format_warning(filepath: str, findings: list[dict]) -> str:
 
 def format_log_note(filepath: str) -> str:
     """Format a brief log note for low-confidence matches (allowed silently)."""
-    return f"PII GUARDIAN: Header/prose references noted in {filepath} (allowed)."
+    return f"FERPA GUARD: Header/prose references noted in {filepath} (allowed)."
 
 
 # ---------------------------------------------------------------------------
@@ -260,18 +260,18 @@ def main():
         output_allow()
 
     # Load allowlist from environment variable and/or allowlist file.
-    # The file-based allowlist (~/.claude/pii-guardian-allow.txt) lets users
+    # The file-based allowlist (~/.claude/ferpa-guard-allow.txt) lets users
     # add entries from within a conversation without restarting the session.
     # All paths are resolved at load time so both sides of comparison are canonical.
     allowlist_sources: dict[str, str] = {}
 
-    allowlist_raw = os.environ.get("PII_GUARDIAN_ALLOW", "")
+    allowlist_raw = os.environ.get("FERPA_GUARD_ALLOW", "")
     for p in allowlist_raw.split(","):
         p = p.strip()
         if p:
-            allowlist_sources[str(Path(p).resolve())] = "env(PII_GUARDIAN_ALLOW)"
+            allowlist_sources[str(Path(p).resolve())] = "env(FERPA_GUARD_ALLOW)"
 
-    allowlist_file = Path.home() / ".claude" / "pii-guardian-allow.txt"
+    allowlist_file = Path.home() / ".claude" / "ferpa-guard-allow.txt"
     if allowlist_file.is_file():
         try:
             for line in allowlist_file.read_text().splitlines():
@@ -287,7 +287,7 @@ def main():
         output_allow()
 
     # Strict mode: block on ANY finding (restores pre-confidence behavior)
-    strict_mode = bool(os.environ.get("PII_GUARDIAN_STRICT"))
+    strict_mode = bool(os.environ.get("FERPA_GUARD_STRICT"))
 
     all_findings = {}
 

@@ -1,9 +1,9 @@
 ---
-name: pii-guardian
+name: ferpa-guard
 description: PreToolUse hook that scans data files for PII and FERPA-protected fields before Claude processes them. Use when the user says "scan for PII", "check this file for sensitive data", "why was my file blocked", "add a PII pattern", "skip this file for PII", or when working with K-12 data exports, PowerSchool files, or roster CSVs.
 ---
 
-# /pii-guardian -- Block PII Before Claude Processes It
+# /ferpa-guard -- Block PII Before Claude Processes It
 
 PreToolUse hook that scans data files for personally identifiable information
 (PII) and protected education fields before Claude reads or processes them.
@@ -14,7 +14,7 @@ The hook fires automatically on every **Read**, **Bash**, and **Edit** tool call
 It extracts file paths from the tool input, scans data files for PII patterns,
 and **blocks the tool call** if sensitive data is detected.
 
-The executable script lives at `~/.claude/skills/pii-guardian/scripts/pii-guardian.py`.
+The executable script lives at `~/.claude/skills/ferpa-guard/scripts/pii_guardian.py`.
 It reads JSON on stdin (Claude Code hooks API) and returns a JSON
 `permissionDecision` on stdout.
 
@@ -107,30 +107,30 @@ The hook outputs a structured denial message with:
 ## Bypassing (When Needed)
 
 If a file is a known-safe false positive (e.g., a template with field labels
-but no real data), add its path to the `PII_GUARDIAN_ALLOW` environment
+but no real data), add its path to the `FERPA_GUARD_ALLOW` environment
 variable as a comma-separated list. Supports both exact file paths and
 directory prefixes:
 
 ```bash
-export PII_GUARDIAN_ALLOW="/path/to/safe-template.csv,/path/to/clean-folder/"
+export FERPA_GUARD_ALLOW="/path/to/safe-template.csv,/path/to/clean-folder/"
 ```
 
 To restore pre-confidence block-everything behavior (any match = block):
 
 ```bash
-export PII_GUARDIAN_STRICT=1
+export FERPA_GUARD_STRICT=1
 ```
 
 ## User Commands
 
 | Intent | Action |
 |--------|--------|
-| "scan this folder for PII" | Run `python3 ~/.claude/skills/pii-guardian/scripts/pii-scan-report.py "/path/to/folder"` via Bash. Prints a full report of blocked, clean, and skipped files with severity breakdowns and redaction commands. Add `--json` for machine-readable output. |
+| "scan this folder for PII" | Run `python3 ~/.claude/skills/ferpa-guard/scripts/pii_scan_report.py "/path/to/folder"` via Bash. Prints a full report of blocked, clean, and skipped files with severity breakdowns and redaction commands. Add `--json` for machine-readable output. |
 | "scan this file for PII" | Run the scanner manually via stdin JSON pipe |
 | "why was my file blocked?" | Explain the PII output and offer the numbered recovery options |
 | "redact this file" | Run `pii-redactor.py` from the shared/ directory on the target file |
 | "add a PII pattern" | Edit `PII_PATTERNS` dict in the scanner script |
-| "skip this file" | Add path to `PII_GUARDIAN_ALLOW` env var |
+| "skip this file" | Add path to `FERPA_GUARD_ALLOW` env var |
 
 ## Hook Configuration
 
@@ -145,7 +145,7 @@ Registered at user level in `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/skills/pii-guardian/scripts/pii-guardian.py\""
+            "command": "python3 \"$HOME/.claude/skills/ferpa-guard/scripts/pii_guardian.py\""
           }
         ]
       }

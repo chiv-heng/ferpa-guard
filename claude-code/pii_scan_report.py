@@ -119,7 +119,7 @@ def format_text_report(results: dict) -> str:
     total = len(results["blocked"]) + len(results["clean"]) + len(results["skipped"])
 
     lines.append("")
-    lines.append("PII SCAN REPORT")
+    lines.append("FERPA GUARD SCAN REPORT")
     lines.append(f"Directory: {results['directory']}")
     lines.append(
         f"Scanned: {len(results['blocked']) + len(results['clean'])} files | "

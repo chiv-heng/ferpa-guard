@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test harness for pii-guardian.py
+Test harness for ferpa-guard.py
 
 Tests three layers:
   1. Pattern detection (scan_content) - does each regex find what it should?
@@ -350,7 +350,7 @@ class TestHookProtocol(unittest.TestCase):
     SCRIPT = str(_claude_code_dir / "pii_guardian.py") if _claude_code_dir.is_dir() else str(Path(__file__).parent / "pii_guardian.py")
 
     def _run_hook(self, tool_name, tool_input, env_extra=None):
-        """Run pii-guardian.py as a subprocess with JSON on stdin."""
+        """Run ferpa-guard.py as a subprocess with JSON on stdin."""
         payload = json.dumps({"tool_name": tool_name, "tool_input": tool_input})
         env = os.environ.copy()
         if env_extra:
@@ -398,7 +398,7 @@ class TestHookProtocol(unittest.TestCase):
             result = self._run_hook("Read", {"file_path": path})
             stderr = result.stderr
             # User-facing section
-            self.assertIn("PII Guardian blocked", stderr)
+            self.assertIn("FERPA Guard blocked", stderr)
             self.assertIn("FERPA", stderr)
             self.assertIn("What was found:", stderr)
             # Numbered options in user-facing section
@@ -436,7 +436,7 @@ class TestHookProtocol(unittest.TestCase):
         try:
             result = self._run_hook("Read", {"file_path": path})
             self.assertIn("Option 4", result.stderr)
-            self.assertIn("PII_GUARDIAN_ALLOW", result.stderr)
+            self.assertIn("FERPA_GUARD_ALLOW", result.stderr)
         finally:
             os.unlink(path)
 
@@ -479,19 +479,19 @@ class TestHookProtocol(unittest.TestCase):
             result = self._run_hook(
                 "Read",
                 {"file_path": path},
-                env_extra={"PII_GUARDIAN_ALLOW": path},
+                env_extra={"FERPA_GUARD_ALLOW": path},
             )
             self.assertEqual(result.returncode, 0)
         finally:
             os.unlink(path)
 
     def test_allowlist_file_bypass(self):
-        """File-based allowlist (~/.claude/pii-guardian-allow.txt) should bypass."""
+        """File-based allowlist (~/.claude/ferpa-guard-allow.txt) should bypass."""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
             f.write("name,ssn\nJane,123-45-6789\n")
             data_path = f.name
 
-        allowlist_file = Path.home() / ".claude" / "pii-guardian-allow.txt"
+        allowlist_file = Path.home() / ".claude" / "ferpa-guard-allow.txt"
         had_existing = allowlist_file.exists()
         existing_content = allowlist_file.read_text() if had_existing else ""
         try:
@@ -1198,7 +1198,7 @@ class TestDecisionMatrix(unittest.TestCase):
     SCRIPT = str(_claude_code_dir / "pii_guardian.py") if _claude_code_dir.is_dir() else str(Path(__file__).parent / "pii_guardian.py")
 
     def _run_hook(self, tool_name, tool_input, env_extra=None):
-        """Run pii-guardian.py as a subprocess with JSON on stdin."""
+        """Run ferpa-guard.py as a subprocess with JSON on stdin."""
         payload = json.dumps({"tool_name": tool_name, "tool_input": tool_input})
         env = os.environ.copy()
         if env_extra:
@@ -1247,14 +1247,14 @@ class TestDecisionMatrix(unittest.TestCase):
             os.unlink(path)
 
     def test_strict_mode_blocks_all(self):
-        """PII_GUARDIAN_STRICT=1 forces all findings to HIGH confidence = block."""
+        """FERPA_GUARD_STRICT=1 forces all findings to HIGH confidence = block."""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
             f.write("contact: info@example.com\n")
             path = f.name
         try:
             result = self._run_hook(
                 "Read", {"file_path": path},
-                env_extra={"PII_GUARDIAN_STRICT": "1"},
+                env_extra={"FERPA_GUARD_STRICT": "1"},
             )
             # Single email would normally be LOG, but strict mode blocks
             self.assertEqual(result.returncode, 2)
@@ -1403,7 +1403,7 @@ class TestSymlinkResolution(unittest.TestCase):
     SCRIPT = str(_claude_code_dir / "pii_guardian.py") if _claude_code_dir.is_dir() else str(Path(__file__).parent / "pii_guardian.py")
 
     def _run_hook(self, tool_name, tool_input, env_extra=None):
-        """Run pii-guardian.py as a subprocess with JSON on stdin."""
+        """Run ferpa-guard.py as a subprocess with JSON on stdin."""
         payload = json.dumps({"tool_name": tool_name, "tool_input": tool_input})
         env = os.environ.copy()
         if env_extra:
@@ -1429,7 +1429,7 @@ class TestSymlinkResolution(unittest.TestCase):
                 result = self._run_hook(
                     "Read",
                     {"file_path": link_path},
-                    env_extra={"PII_GUARDIAN_ALLOW": real_path},
+                    env_extra={"FERPA_GUARD_ALLOW": real_path},
                 )
                 self.assertEqual(result.returncode, 0)
             finally:
@@ -1448,7 +1448,7 @@ class TestSymlinkResolution(unittest.TestCase):
                 result = self._run_hook(
                     "Read",
                     {"file_path": link_path},
-                    env_extra={"PII_GUARDIAN_ALLOW": link_path},
+                    env_extra={"FERPA_GUARD_ALLOW": link_path},
                 )
                 self.assertEqual(result.returncode, 0)
             finally:
@@ -1463,7 +1463,7 @@ class TestSymlinkResolution(unittest.TestCase):
             result = self._run_hook(
                 "Read",
                 {"file_path": path},
-                env_extra={"PII_GUARDIAN_ALLOW": path},
+                env_extra={"FERPA_GUARD_ALLOW": path},
             )
             self.assertEqual(result.returncode, 0)
         finally:
@@ -1482,7 +1482,7 @@ class TestSymlinkResolution(unittest.TestCase):
                 result = self._run_hook(
                     "Read",
                     {"file_path": link_path},
-                    env_extra={"PII_GUARDIAN_ALLOW": "/tmp/totally_different_file.csv"},
+                    env_extra={"FERPA_GUARD_ALLOW": "/tmp/totally_different_file.csv"},
                 )
                 self.assertEqual(result.returncode, 2)
             finally:
@@ -1499,7 +1499,7 @@ class TestAuditLogging(unittest.TestCase):
     SCRIPT = str(_claude_code_dir / "pii_guardian.py") if _claude_code_dir.is_dir() else str(Path(__file__).parent / "pii_guardian.py")
 
     def _run_hook(self, tool_name, tool_input, env_extra=None):
-        """Run pii-guardian.py as a subprocess with JSON on stdin."""
+        """Run ferpa-guard.py as a subprocess with JSON on stdin."""
         payload = json.dumps({"tool_name": tool_name, "tool_input": tool_input})
         env = os.environ.copy()
         if env_extra:
@@ -1526,17 +1526,17 @@ class TestAuditLogging(unittest.TestCase):
                     "Read",
                     {"file_path": data_path},
                     env_extra={
-                        "PII_GUARDIAN_ALLOW": data_path,
+                        "FERPA_GUARD_ALLOW": data_path,
                         "HOME": tmpdir,
                     },
                 )
                 self.assertEqual(result.returncode, 0)
-                audit_log = claude_dir / "pii-guardian-audit.log"
+                audit_log = claude_dir / "ferpa-guard-audit.log"
                 self.assertTrue(audit_log.exists(), "Audit log file should be created")
                 content = audit_log.read_text()
                 self.assertIn("ALLOW", content)
                 self.assertIn(data_path, content)
-                self.assertIn("env(PII_GUARDIAN_ALLOW)", content)
+                self.assertIn("env(FERPA_GUARD_ALLOW)", content)
                 # Check ISO 8601 timestamp format (YYYY-MM-DDTHH:MM:SS)
                 self.assertRegex(content, r"\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\]")
             finally:
@@ -1554,7 +1554,7 @@ class TestAuditLogging(unittest.TestCase):
                     "Read",
                     {"file_path": data_path},
                     env_extra={
-                        "PII_GUARDIAN_ALLOW": data_path,
+                        "FERPA_GUARD_ALLOW": data_path,
                         "HOME": tmpdir,
                     },
                 )
@@ -1576,13 +1576,13 @@ class TestAuditLogging(unittest.TestCase):
                     "Read",
                     {"file_path": data_path},
                     env_extra={
-                        "PII_GUARDIAN_ALLOW": data_path,
+                        "FERPA_GUARD_ALLOW": data_path,
                         "HOME": tmpdir,
                     },
                 )
-                audit_log = Path(tmpdir) / ".claude" / "pii-guardian-audit.log"
+                audit_log = Path(tmpdir) / ".claude" / "ferpa-guard-audit.log"
                 content = audit_log.read_text()
-                self.assertIn("source=env(PII_GUARDIAN_ALLOW)", content)
+                self.assertIn("source=env(FERPA_GUARD_ALLOW)", content)
             finally:
                 os.unlink(data_path)
 
@@ -1595,7 +1595,7 @@ class TestAuditLogging(unittest.TestCase):
             try:
                 claude_dir = Path(tmpdir) / ".claude"
                 claude_dir.mkdir()
-                allowlist_path = claude_dir / "pii-guardian-allow.txt"
+                allowlist_path = claude_dir / "ferpa-guard-allow.txt"
                 allowlist_path.write_text(data_path + "\n")
                 result = self._run_hook(
                     "Read",
@@ -1603,7 +1603,7 @@ class TestAuditLogging(unittest.TestCase):
                     env_extra={"HOME": tmpdir},
                 )
                 self.assertEqual(result.returncode, 0)
-                audit_log = claude_dir / "pii-guardian-audit.log"
+                audit_log = claude_dir / "ferpa-guard-audit.log"
                 content = audit_log.read_text()
                 self.assertIn("source=file(", content)
             finally:
@@ -1624,7 +1624,7 @@ class TestAuditLogging(unittest.TestCase):
                     env_extra={"HOME": tmpdir},
                 )
                 self.assertEqual(result.returncode, 2)
-                audit_log = claude_dir / "pii-guardian-audit.log"
+                audit_log = claude_dir / "ferpa-guard-audit.log"
                 self.assertFalse(audit_log.exists(), "No audit log when file is blocked")
             finally:
                 os.unlink(data_path)

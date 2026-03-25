@@ -1,11 +1,11 @@
-# PII Guardian
+# FERPA Guard
 
 K-12 AI safety layer that detects and blocks student PII before it enters LLM context windows. Protects against accidental FERPA/COPPA violations across AI tools teachers and school staff already use.
 
 ## Project Structure
 
 ```
-PII-Guardian/
+ferpa-guard/
   shared/           # Platform-agnostic detection engine and redactor
   claude-code/      # PreToolUse hook for Claude Code users (IT/data staff)
   cowork/           # Project config + MCP server for Claude Cowork users (ops/admin)

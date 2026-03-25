@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PII Guardian MCP Server -- Scan and redact student PII in files.
+FERPA Guard MCP Server -- Scan and redact student PII in files.
 
 Wraps the shared detection engine and redactor as MCP tools for use in
 Claude Desktop (Cowork projects). Runs over stdio transport.
@@ -49,12 +49,12 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     stream=sys.stderr,
 )
-logger = logging.getLogger("pii-guardian-mcp")
+logger = logging.getLogger("ferpa-guard-mcp")
 
 # ---------------------------------------------------------------------------
 # Audit logging (FERPA compliance trail)
 # ---------------------------------------------------------------------------
-AUDIT_LOG_PATH = Path.home() / ".claude" / "pii-guardian-audit.log"
+AUDIT_LOG_PATH = Path.home() / ".claude" / "ferpa-guard-audit.log"
 
 
 def _write_audit_entry(entry: str) -> None:
@@ -80,21 +80,21 @@ def _write_audit_entry(entry: str) -> None:
 def _load_allowlist() -> dict[str, str]:
     """Load allowlist from env var and file. Returns dict of resolved_path -> source.
 
-    Reads PII_GUARDIAN_ALLOW env var (comma-separated paths) and
-    ~/.claude/pii-guardian-allow.txt (one path per line, # comments).
+    Reads FERPA_GUARD_ALLOW env var (comma-separated paths) and
+    ~/.claude/ferpa-guard-allow.txt (one path per line, # comments).
     Reloaded on every call so changes take effect without server restart.
     """
     allowlist_sources: dict[str, str] = {}
 
     # From env var
-    allowlist_raw = os.environ.get("PII_GUARDIAN_ALLOW", "")
+    allowlist_raw = os.environ.get("FERPA_GUARD_ALLOW", "")
     for p in allowlist_raw.split(","):
         p = p.strip()
         if p:
-            allowlist_sources[str(Path(p).resolve())] = "env(PII_GUARDIAN_ALLOW)"
+            allowlist_sources[str(Path(p).resolve())] = "env(FERPA_GUARD_ALLOW)"
 
     # From file
-    allowlist_file = Path.home() / ".claude" / "pii-guardian-allow.txt"
+    allowlist_file = Path.home() / ".claude" / "ferpa-guard-allow.txt"
     if allowlist_file.is_file():
         try:
             for line in allowlist_file.read_text().splitlines():
@@ -110,7 +110,7 @@ def _load_allowlist() -> dict[str, str]:
 def _check_allowlist(file_path: str) -> str | None:
     """Check if a file is on the allowlist.
 
-    Returns the source string (e.g. "env(PII_GUARDIAN_ALLOW)") if the file
+    Returns the source string (e.g. "env(FERPA_GUARD_ALLOW)") if the file
     is allowed, None if not. Supports exact path matches and directory
     prefix matches.
     """
@@ -127,7 +127,7 @@ def _check_allowlist(file_path: str) -> str | None:
 # ---------------------------------------------------------------------------
 # FastMCP server
 # ---------------------------------------------------------------------------
-mcp = FastMCP("PII Guardian")
+mcp = FastMCP("FERPA Guard")
 
 # ---------------------------------------------------------------------------
 # Optional dependency pre-check

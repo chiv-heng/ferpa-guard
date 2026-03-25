@@ -1,8 +1,8 @@
 #!/bin/bash
-# install.sh -- Install PII Guardian as a user-level Claude Code hook
+# install.sh -- Install FERPA Guard as a user-level Claude Code hook
 #
 # What it does:
-#   1. Copies pii_guardian.py, pii_scan_report.py, and shared/ to ~/.claude/skills/pii-guardian/
+#   1. Copies pii_guardian.py, pii_scan_report.py, and shared/ to ~/.claude/skills/ferpa-guard/
 #   2. Registers the PreToolUse hook in ~/.claude/settings.json
 #   3. Installs openpyxl (for xlsx scanning) with graceful fallback
 #   4. Runs a 5-step self-test
@@ -27,13 +27,13 @@ header() { echo ""; echo "==> $1"; }
 # Step 1: Resolve paths portably
 # ---------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEST="$HOME/.claude/skills/pii-guardian"
+DEST="$HOME/.claude/skills/ferpa-guard"
 SETTINGS="$HOME/.claude/settings.json"
 
 # ---------------------------------------------------------------
 # Step 2: Copy hook + shared engine
 # ---------------------------------------------------------------
-header "Installing PII Guardian"
+header "Installing FERPA Guard"
 
 mkdir -p "$DEST/scripts"
 
@@ -60,7 +60,7 @@ python3 - "$SETTINGS" << 'PYEOF'
 import sys, json, os
 
 settings_path = sys.argv[1]
-hook_command = "python3 ~/.claude/skills/pii-guardian/scripts/pii_guardian.py"
+hook_command = "python3 ~/.claude/skills/ferpa-guard/scripts/pii_guardian.py"
 hook_entry = {
     "matcher": "Read|Bash|Edit",
     "hooks": [{"type": "command", "command": hook_command}]
@@ -168,11 +168,11 @@ if [ "$FAILURES" -gt 0 ]; then
     echo "  WARNING: $FAILURES self-test(s) failed. Check output above."
     echo ""
 fi
-echo "  PII Guardian installed at: ~/.claude/skills/pii-guardian/"
+echo "  FERPA Guard installed at: ~/.claude/skills/ferpa-guard/"
 echo "  Hook registered in: ~/.claude/settings.json"
 echo ""
 echo "  It will automatically scan files before Claude reads them."
-echo "  To bypass a specific file: export PII_GUARDIAN_ALLOW=\"/path/to/file\""
+echo "  To bypass a specific file: export FERPA_GUARD_ALLOW=\"/path/to/file\""
 echo ""
 echo "  Optional file type support:"
 echo "    xlsx: pip3 install openpyxl"

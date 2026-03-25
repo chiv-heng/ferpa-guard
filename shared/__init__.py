@@ -1,4 +1,4 @@
-"""PII Guardian shared detection engine and redaction tools."""
+"""FERPA Guard shared detection engine and redaction tools."""
 
 from shared.pii_engine import (
     ScanInput,
