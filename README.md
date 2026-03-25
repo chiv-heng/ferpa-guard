@@ -10,7 +10,7 @@ FERPA Guard is a Python script that runs **before** the AI model sees anything. 
 
 The strongest version of FERPA Guard requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) (Anthropic's developer CLI). If your team is comfortable with command-line tools, start there -- it's the only option that **programmatically blocks** student data before the AI sees it.
 
-Not everyone is comfortable setting up a CLI tool, and that's okay. We've built lighter options that work inside the AI tools your staff already use. These are instruction-based -- the AI follows the rules because you asked it to, which is less reliable than a hard block, but far better than no protection at all.
+Not everyone is comfortable setting up a CLI tool, and that's okay. There are lighter options that work inside the AI tools your staff already use. These are instruction-based -- the AI follows the rules because you asked it to, which is less reliable than a hard block, but far better than no protection at all.
 
 | Option | Who it's for | Protection level |
 |--------|-------------|-----------------|
