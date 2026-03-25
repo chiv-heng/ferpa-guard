@@ -1,4 +1,4 @@
-# FERPA Guard -- Cowork Setup
+# FERPA Guard -- Claude Desktop Setup
 
 ## Quick Start (Instructions-Only Mode)
 
@@ -14,7 +14,7 @@ The MCP server provides `scan_file` and `redact_file` tools directly in Claude D
 ### 1. Install dependencies
 
 ```bash
-pip install mcp
+pip install "mcp[cli]"
 ```
 
 Optional (extend file type support):
@@ -41,6 +41,10 @@ Add to your Claude Desktop MCP config (`claude_desktop_config.json`):
 
 Replace `<project-root>` with the absolute path to your ferpa-guard clone.
 
+The config file location depends on your operating system:
+- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+
 ### 3. Verify
 
 After restarting Claude Desktop, the `scan_file` and `redact_file` tools should appear in your tool list.
@@ -51,25 +55,11 @@ Claude will scan any file content, uploads, or pasted data for student PII befor
 
 ## What This Does NOT Do
 
-- This is **instruction-based**, not programmatic. Claude follows the rules because the instructions tell it to. There is no hard block like the Claude Code PreToolUse hook.
-- It does not intercept file uploads at the transport layer. Claude sees the content and is instructed not to process it further.
-- It relies on Claude's compliance with project instructions, which is strong but not guaranteed like a code-level hook.
+- The MCP server provides tools (`scan_file`, `redact_file`) that Claude calls on demand. It does **not** automatically intercept every file read like the Claude Code hook does.
+- The user must ask Claude to scan a file, or Claude must decide to use the tool based on context. There is no automatic interception at the transport layer.
+- For automatic, programmatic blocking of every file access, use the Claude Code hook instead (see `claude-code/SKILL.md`).
 
-## For the AFRI Analysis
+## Disclaimer
 
-The redactor lives at:
-```
-<project-root>/shared/pii_redactor.py
-```
+FERPA Guard is a detection aid, not a compliance certification. It reduces the risk of accidental PII exposure but cannot guarantee complete protection. Regex-based scanning does not catch all forms of sensitive data (for example, unlabeled student names in free text). Always review data handling practices with your district's legal counsel.
 
-For AFRI files that are XLSX (routing tracker), you'll need to:
-1. Export the relevant tabs to CSV first (the redactor supports CSV but not XLSX)
-2. Run the redactor on the CSV exports
-3. Upload the redacted CSVs to the Cowork project
-
-Or: describe the column structure to Claude and have it generate synthetic data with the same shape.
-
-## Limitations (Internal Version)
-
-- XLSX/PDF/DOCX files need manual export to CSV before redaction (unless optional deps installed)
-- No automated allowlisting (user confirms verbally if data is safe)

@@ -26,3 +26,7 @@ Claude will check any data you share for sensitive student information before pr
 - **When in doubt, describe what you need instead of pasting actual data.** For example, say "I have a spreadsheet with 30 students, columns for name, grade, and attendance" instead of pasting the spreadsheet.
 - **If Claude warns about sensitive data, follow its suggestions.** It will always offer at least two ways to continue safely.
 - **Images count too.** If you upload a screenshot of a gradebook or roster, Claude will check for visible student information.
+
+## Disclaimer
+
+FERPA Guard is a detection aid, not a compliance certification. It reduces the risk of accidental PII exposure but cannot guarantee complete protection. Regex-based scanning does not catch all forms of sensitive data (for example, unlabeled student names in free text). Always review data handling practices with your district's legal counsel.

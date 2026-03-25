@@ -98,7 +98,7 @@ The hook outputs a structured denial message with:
 3. How many occurrences of each type
 4. **Recovery instructions** with numbered options:
    - **Option 1:** Generate a synthetic file with the same column structure but fake values
-   - **Option 2:** Run the built-in redactor (`pii-redactor.py`) to create a safe copy with hashed/synthetic replacements. Column headers and structure are preserved. The redactor runs locally and does NOT send data to any AI model.
+   - **Option 2:** Run the built-in redactor (`pii_redactor.py`) to create a safe copy with hashed/synthetic replacements. Column headers and structure are preserved. The redactor runs locally and does NOT send data to any AI model.
    - **Option 3:** Ask the user to identify safe columns, then strip everything else
    - **Option 4:** (Critical/high only) Allowlist bypass if the user confirms no real data is present
 
@@ -128,7 +128,7 @@ export FERPA_GUARD_STRICT=1
 | "scan this folder for PII" | Run `python3 ~/.claude/skills/ferpa-guard/scripts/pii_scan_report.py "/path/to/folder"` via Bash. Prints a full report of blocked, clean, and skipped files with severity breakdowns and redaction commands. Add `--json` for machine-readable output. |
 | "scan this file for PII" | Run the scanner manually via stdin JSON pipe |
 | "why was my file blocked?" | Explain the PII output and offer the numbered recovery options |
-| "redact this file" | Run `pii-redactor.py` from the shared/ directory on the target file |
+| "redact this file" | Run `pii_redactor.py` from the shared/ directory on the target file |
 | "add a PII pattern" | Edit `PII_PATTERNS` dict in the scanner script |
 | "skip this file" | Add path to `FERPA_GUARD_ALLOW` env var |
 
@@ -168,3 +168,7 @@ K-12 education records are protected under federal law (20 U.S.C. 1232g).
 Disclosure requires written consent from the family or eligible person.
 This hook helps enforce that boundary by catching PII before it enters the
 Claude context window.
+
+## Disclaimer
+
+FERPA Guard is a detection aid, not a compliance certification. It reduces the risk of accidental PII exposure but cannot guarantee complete protection. Regex-based scanning does not catch all forms of sensitive data (for example, unlabeled student names in free text). Always review data handling practices with your district's legal counsel.

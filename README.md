@@ -38,7 +38,7 @@ Two options, depending on your comfort level:
 
 **Option A: MCP server (recommended)** -- Adds `scan_file` and `redact_file` tools directly to Claude Desktop.
 
-1. Clone this repo and install the MCP dependency: `pip install mcp`
+1. Clone this repo and install the MCP dependency: `pip install "mcp[cli]"`
 2. Add to your Claude Desktop config (`claude_desktop_config.json`):
    ```json
    {
@@ -194,6 +194,10 @@ export FERPA_GUARD_STRICT=1
 ## Legal context
 
 K-12 education records are protected under FERPA (20 U.S.C. 1232g). Disclosure requires written consent from the family or eligible student. This tool helps enforce that boundary by catching PII before it enters AI context windows.
+
+## Disclaimer
+
+FERPA Guard is a detection aid, not a compliance certification. It reduces the risk of accidental PII exposure but cannot guarantee complete protection. Regex-based scanning does not catch all forms of sensitive data (for example, unlabeled student names in free text). Always review data handling practices with your district's legal counsel.
 
 ## License
 

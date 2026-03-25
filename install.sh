@@ -60,7 +60,7 @@ python3 - "$SETTINGS" << 'PYEOF'
 import sys, json, os
 
 settings_path = sys.argv[1]
-hook_command = "python3 ~/.claude/skills/ferpa-guard/scripts/pii_guardian.py"
+hook_command = "python3 \"$HOME/.claude/skills/ferpa-guard/scripts/pii_guardian.py\""
 hook_entry = {
     "matcher": "Read|Bash|Edit",
     "hooks": [{"type": "command", "command": hook_command}]
@@ -68,8 +68,12 @@ hook_entry = {
 
 settings = {}
 if os.path.exists(settings_path):
-    with open(settings_path) as f:
-        settings = json.load(f)
+    try:
+        with open(settings_path) as f:
+            settings = json.load(f)
+    except json.JSONDecodeError:
+        print(f"  [ERROR] {settings_path} contains invalid JSON. Please fix it manually or delete it to start fresh.")
+        sys.exit(1)
 
 settings.setdefault("hooks", {}).setdefault("PreToolUse", [])
 existing = [h.get("hooks", [{}])[0].get("command") for h in settings["hooks"]["PreToolUse"]]
