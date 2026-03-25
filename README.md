@@ -19,7 +19,7 @@ Each surface uses the same shared detection engine (`shared/pii_engine.py`), so 
 ## Quick start (Claude Code)
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/pii-guardian.git
+git clone https://github.com/chiv-heng/pii-guardian.git
 cd pii-guardian
 ./install.sh
 ```
