@@ -1,0 +1,34 @@
+
+# ── Project-specific ──
+.claude/
+.bg-shell/
+.planning/
+pii_guardian.egg-info/
+
+# ── GSD baseline ──
+.gsd
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.code-workspace
+.env
+.env.*
+!.env.example
+node_modules/
+.next/
+dist/
+build/
+__pycache__/
+*.pyc
+.venv/
+venv/
+target/
+vendor/
+*.log
+coverage/
+.cache/
+tmp/

@@ -1,0 +1,183 @@
+#!/bin/bash
+# install.sh -- Install PII Guardian as a user-level Claude Code hook
+#
+# What it does:
+#   1. Copies pii_guardian.py, pii_scan_report.py, and shared/ to ~/.claude/skills/pii-guardian/
+#   2. Registers the PreToolUse hook in ~/.claude/settings.json
+#   3. Installs openpyxl (for xlsx scanning) with graceful fallback
+#   4. Runs a 5-step self-test
+#
+# What it does NOT do:
+#   - Modify any project-level settings
+#   - Overwrite existing hooks in settings.json (it merges)
+#   - Require sudo
+
+set -euo pipefail
+
+# ---------------------------------------------------------------
+# Step 0: Define helper functions (before any path resolution)
+# ---------------------------------------------------------------
+FAILURES=0
+
+pass() { echo "  [ok] $1"; }
+fail() { echo "  [FAIL] $1"; FAILURES=$((FAILURES+1)); }
+header() { echo ""; echo "==> $1"; }
+
+# ---------------------------------------------------------------
+# Step 1: Resolve paths portably
+# ---------------------------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEST="$HOME/.claude/skills/pii-guardian"
+SETTINGS="$HOME/.claude/settings.json"
+
+# ---------------------------------------------------------------
+# Step 2: Copy hook + shared engine
+# ---------------------------------------------------------------
+header "Installing PII Guardian"
+
+mkdir -p "$DEST/scripts"
+
+cp "$SCRIPT_DIR/claude-code/pii_guardian.py" "$DEST/scripts/pii_guardian.py"
+pass "Copied pii_guardian.py to $DEST/scripts/"
+
+cp "$SCRIPT_DIR/claude-code/pii_scan_report.py" "$DEST/scripts/pii_scan_report.py"
+pass "Copied pii_scan_report.py to $DEST/scripts/"
+
+cp -r "$SCRIPT_DIR/shared/" "$DEST/shared/"
+pass "Copied shared/ engine to $DEST/shared/"
+
+chmod +x "$DEST/scripts/pii_guardian.py"
+pass "Set pii_guardian.py executable"
+
+# ---------------------------------------------------------------
+# Step 3: Merge hook into settings.json using Python json stdlib
+# ---------------------------------------------------------------
+header "Registering PreToolUse hook"
+
+mkdir -p "$HOME/.claude"
+
+python3 - "$SETTINGS" << 'PYEOF'
+import sys, json, os
+
+settings_path = sys.argv[1]
+hook_command = "python3 ~/.claude/skills/pii-guardian/scripts/pii_guardian.py"
+hook_entry = {
+    "matcher": "Read|Bash|Edit",
+    "hooks": [{"type": "command", "command": hook_command}]
+}
+
+settings = {}
+if os.path.exists(settings_path):
+    with open(settings_path) as f:
+        settings = json.load(f)
+
+settings.setdefault("hooks", {}).setdefault("PreToolUse", [])
+existing = [h.get("hooks", [{}])[0].get("command") for h in settings["hooks"]["PreToolUse"]]
+if hook_command not in existing:
+    settings["hooks"]["PreToolUse"].append(hook_entry)
+    with open(settings_path, "w") as f:
+        json.dump(settings, f, indent=2)
+    print(f"  [ok] Hook registered in {settings_path}")
+else:
+    print("  [ok] Hook already registered (idempotent)")
+PYEOF
+
+# ---------------------------------------------------------------
+# Step 4: Install optional dependencies
+# ---------------------------------------------------------------
+header "Checking dependencies"
+
+if python3 -c "import openpyxl" 2>/dev/null; then
+    pass "openpyxl already installed (xlsx scanning ready)"
+else
+    echo "  Installing openpyxl..."
+    pip3 install openpyxl --quiet 2>/dev/null \
+        || pip3 install openpyxl --break-system-packages --quiet 2>/dev/null \
+        || echo "  [warn] Could not install openpyxl. xlsx files will be skipped. Try: pip3 install openpyxl"
+fi
+
+# ---------------------------------------------------------------
+# Step 5: Self-test (5 checks)
+# ---------------------------------------------------------------
+header "Running self-test"
+
+# Disable exit-on-error for tests (we check exit codes explicitly)
+set +e
+
+# Test 1: Clean file should pass (exit 0)
+echo '{"tool_name":"Read","tool_input":{"file_path":"/dev/null"}}' | python3 "$DEST/scripts/pii_guardian.py" > /dev/null 2>&1
+CLEAN_EXIT=$?
+if [ "$CLEAN_EXIT" = "0" ]; then
+    pass "Clean file: allowed (exit 0)"
+else
+    fail "Clean file should exit 0, got $CLEAN_EXIT"
+fi
+
+# Test 2: Non-file tool should pass (exit 0)
+echo '{"tool_name":"Glob","tool_input":{"pattern":"*.py"}}' | python3 "$DEST/scripts/pii_guardian.py" > /dev/null 2>&1
+SKIP_EXIT=$?
+if [ "$SKIP_EXIT" = "0" ]; then
+    pass "Non-file tool (Glob): allowed (exit 0)"
+else
+    fail "Non-file tool should exit 0, got $SKIP_EXIT"
+fi
+
+# Test 3: PII file should be blocked (exit 2)
+TEMP_PII=$(mktemp /tmp/pii-test-XXXXXX.csv)
+cat > "$TEMP_PII" << 'PIIEOF'
+student_id,name,grade,sasid,parent_email
+10234,Maria Santos,7,SASID 987654321,ana.santos@gmail.com
+10235,James Wilson,8,SASID 123456789,rwilson@yahoo.com
+PIIEOF
+
+BLOCK_OUTPUT=$(echo "{\"tool_name\":\"Read\",\"tool_input\":{\"file_path\":\"$TEMP_PII\"}}" | python3 "$DEST/scripts/pii_guardian.py" 2>/dev/null)
+BLOCK_EXIT=$?
+rm -f "$TEMP_PII"
+
+if [ "$BLOCK_EXIT" = "2" ]; then
+    pass "PII file: blocked (exit 2)"
+else
+    fail "PII file should exit 2, got $BLOCK_EXIT"
+fi
+
+# Test 4: Block output should be valid JSON with permissionDecision=deny
+if echo "$BLOCK_OUTPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['hookSpecificOutput']['permissionDecision']=='deny'" 2>/dev/null; then
+    pass "Block output: valid JSON with permissionDecision=deny"
+else
+    fail "Block output is not valid hook protocol JSON"
+fi
+
+# Test 5: Verify shared/ import path works for pii_scan_report.py
+python3 -c "import sys; sys.path.insert(0, '$DEST'); from shared import pii_engine" 2>/dev/null
+IMPORT_EXIT=$?
+if [ "$IMPORT_EXIT" = "0" ]; then
+    pass "shared/ import works from install location"
+else
+    fail "shared/ import failed from install location"
+fi
+
+# Re-enable exit-on-error
+set -e
+
+# ---------------------------------------------------------------
+# Done
+# ---------------------------------------------------------------
+header "Installation complete"
+echo ""
+if [ "$FAILURES" -gt 0 ]; then
+    echo "  WARNING: $FAILURES self-test(s) failed. Check output above."
+    echo ""
+fi
+echo "  PII Guardian installed at: ~/.claude/skills/pii-guardian/"
+echo "  Hook registered in: ~/.claude/settings.json"
+echo ""
+echo "  It will automatically scan files before Claude reads them."
+echo "  To bypass a specific file: export PII_GUARDIAN_ALLOW=\"/path/to/file\""
+echo ""
+echo "  Optional file type support:"
+echo "    xlsx: pip3 install openpyxl"
+echo "    pdf:  pip3 install pymupdf"
+echo "    docx: pip3 install python-docx"
+echo ""
+echo "  To verify in a Claude session, try reading a CSV with student data."
+echo ""

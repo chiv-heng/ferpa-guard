@@ -1,0 +1,15 @@
+[project]
+name = "pii-guardian"
+version = "0.1.0"
+description = "K-12 AI safety layer that detects and blocks student PII before it enters LLM context windows"
+requires-python = ">=3.10"
+
+[project.optional-dependencies]
+mcp  = ["mcp>=1.0"]
+xlsx = ["openpyxl>=3.0"]
+pdf  = ["pymupdf>=1.20"]
+docx = ["python-docx>=0.8"]
+all  = ["pii-guardian[mcp,xlsx,pdf,docx]"]
+
+[tool.setuptools]
+packages = []
