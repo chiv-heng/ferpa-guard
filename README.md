@@ -16,7 +16,13 @@ PII Guardian is a Python script that runs **before** the AI model sees anything.
 
 Each surface uses the same shared detection engine (`shared/pii_engine.py`), so patterns and behavior are consistent everywhere.
 
-## Quick start (Claude Code)
+## Setup
+
+Choose the surface that matches how your team uses Claude:
+
+### Claude Code (IT staff, data directors, developers)
+
+The strongest protection. A Python hook runs before every file read and **programmatically blocks** access to files with PII. The LLM never sees the data.
 
 ```bash
 git clone https://github.com/chiv-heng/pii-guardian.git
@@ -24,13 +30,47 @@ cd pii-guardian
 ./install.sh
 ```
 
-The install script:
-1. Copies the hook and shared engine to `~/.claude/skills/pii-guardian/`
-2. Registers the PreToolUse hook in `~/.claude/settings.json`
-3. Installs `openpyxl` for xlsx scanning (optional, graceful fallback)
-4. Runs a 5-step self-test
+The install script copies the hook to `~/.claude/skills/pii-guardian/`, registers it in `~/.claude/settings.json`, and runs a self-test. To verify, try reading a CSV with student data in a Claude Code session.
 
-To verify, try reading a CSV with student data in a Claude Code session.
+### Claude Desktop (school ops, admin staff)
+
+Two options, depending on your comfort level:
+
+**Option A: MCP server (recommended)** -- Adds `scan_file` and `redact_file` tools directly to Claude Desktop.
+
+1. Clone this repo and install the MCP dependency: `pip install mcp`
+2. Add to your Claude Desktop config (`claude_desktop_config.json`):
+   ```json
+   {
+     "mcpServers": {
+       "pii-guardian": {
+         "command": "python3",
+         "args": ["/path/to/pii-guardian/cowork/mcp_server.py"]
+       }
+     }
+   }
+   ```
+3. Restart Claude Desktop. The tools appear in your tool list.
+
+**Option B: Project instructions (no install)** -- Copy the contents of `cowork/PROJECT-INSTRUCTIONS.md` into a Claude Desktop Project's custom instructions. This is instruction-based (Claude follows the rules because the instructions tell it to), not a programmatic block.
+
+### Claude Chat (teachers, general staff)
+
+No software to install. Paste instructions into a Claude project:
+
+1. Go to [claude.ai](https://claude.ai) > **Projects** > **Create a Project**
+2. Open `chat/CUSTOM-INSTRUCTIONS.md` from this repo, copy everything
+3. Paste into the project's custom instructions and save
+
+Any conversation started inside that project has PII protection active. Conversations outside it do not.
+
+### Protection strength by surface
+
+| Surface | Mechanism | Strength |
+|---------|-----------|----------|
+| Claude Code | Python hook blocks tool calls before the LLM sees the file | Hard block -- data never enters context |
+| Claude Desktop (MCP) | Tools scan and redact files on demand | Tool-level -- user invokes scan explicitly |
+| Claude Desktop / Chat (instructions) | Project instructions tell Claude to check for PII | Instruction-based -- strong but not guaranteed |
 
 ## What it detects
 
