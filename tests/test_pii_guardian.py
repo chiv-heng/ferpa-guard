@@ -1559,7 +1559,7 @@ class TestAuditLogging(unittest.TestCase):
                     },
                 )
                 self.assertEqual(result.returncode, 0)
-                self.assertIn("PII GUARDIAN AUDIT:", result.stderr)
+                self.assertIn("FERPA GUARD AUDIT:", result.stderr)
                 self.assertIn("ALLOW", result.stderr)
             finally:
                 os.unlink(data_path)
