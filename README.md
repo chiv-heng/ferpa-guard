@@ -6,19 +6,24 @@ K-12 AI safety layer that detects and blocks student PII before it enters LLM co
 
 FERPA Guard is a Python script that runs **before** the AI model sees anything. When a user tries to read a file containing student data (roster CSVs, SIS exports, xlsx workbooks), the script intercepts the request, scans for sensitive patterns using regex-based detection, and blocks access before the data enters the LLM context window. No AI is involved in the scanning. It then offers safe alternatives: synthetic data generation, built-in redaction, or column-level filtering.
 
-## Delivery surfaces
+## How to use it
 
-| Surface | Audience | Mechanism | Status |
-|---------|----------|-----------|--------|
-| **Claude Code** | IT/data directors, devs | PreToolUse hook (settings.json) | Done |
-| **Claude Projects** | School ops, admin staff | MCP server + project instructions | Done |
-| **Claude Chat** | Teachers, general staff | Custom instructions / project knowledge | Done |
+The strongest version of FERPA Guard requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) (Anthropic's developer CLI). If your team is comfortable with command-line tools, start there -- it's the only option that **programmatically blocks** student data before the AI sees it.
 
-Each surface uses the same shared detection engine (`shared/pii_engine.py`), so patterns and behavior are consistent everywhere.
+Not everyone is comfortable setting up a CLI tool, and that's okay. We've built lighter options that work inside the AI tools your staff already use. These are instruction-based -- the AI follows the rules because you asked it to, which is less reliable than a hard block, but far better than no protection at all.
+
+| Option | Who it's for | Protection level |
+|--------|-------------|-----------------|
+| **Claude Code hook** | IT staff, data directors, developers | **Hard block** -- data never enters the AI |
+| **Claude Desktop MCP server** | School ops, admin staff | **Tool-level** -- Claude can scan files on demand |
+| **Claude project instructions** | Teachers, general staff | **Instruction-based** -- AI follows rules you set |
+| **Universal prompt** | Anyone using ChatGPT, Gemini, Copilot, etc. | **Instruction-based** -- paste and go |
+
+All options use the same detection patterns, so the safety rules are consistent everywhere.
 
 ## Setup
 
-Choose the surface that matches how your team uses Claude:
+Choose the option that fits your team:
 
 ### Claude Code (IT staff, data directors, developers)
 
