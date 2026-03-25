@@ -4,7 +4,7 @@ K-12 AI safety layer that detects and blocks student PII before it enters LLM co
 
 ## What it does
 
-When a user tries to read a file containing student data (roster CSVs, SIS exports, xlsx workbooks), PII Guardian intercepts the request, scans for sensitive patterns, and blocks access before the data reaches the AI model. It then offers safe alternatives: synthetic data generation, built-in redaction, or column-level filtering.
+PII Guardian is a Python script that runs **before** the AI model sees anything. When a user tries to read a file containing student data (roster CSVs, SIS exports, xlsx workbooks), the script intercepts the request, scans for sensitive patterns using regex-based detection, and blocks access before the data enters the LLM context window. No AI is involved in the scanning. It then offers safe alternatives: synthetic data generation, built-in redaction, or column-level filtering.
 
 ## Delivery surfaces
 
