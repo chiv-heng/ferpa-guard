@@ -64,6 +64,10 @@ No software to install. Paste instructions into a Claude project:
 
 Any conversation started inside that project has PII protection active. Conversations outside it do not.
 
+### Any other AI tool (ChatGPT, Gemini, Copilot, etc.)
+
+Open `UNIVERSAL-INSTRUCTIONS.md` from this repo, copy the prompt, and paste it into your AI tool's custom instructions or system prompt. Works with any LLM that supports custom instructions. This is instruction-based (the AI follows the rules because you asked it to), not a programmatic block.
+
 ### Protection strength by surface
 
 | Surface | Mechanism | Strength |
