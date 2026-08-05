@@ -51,6 +51,20 @@ Optional (per file type):
 - `pymupdf` for .pdf scanning
 - `python-docx` for .docx scanning
 
+## Setup
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[all]"   # editable install with mcp/xlsx/pdf/docx extras
+```
+
+Install as a Claude Code hook (project-scoped recommended):
+
+```bash
+./install.sh --project    # registers PreToolUse hook in .claude/settings.local.json
+./install.sh              # global (~/.claude/settings.json); merges, never overwrites
+```
+
 ## Recovery Model
 
 When PII is detected, the tool:
@@ -65,11 +79,17 @@ When PII is detected, the tool:
 
 ## Testing
 
+Each suite is standalone-runnable (no pytest dependency).
+
 ```bash
+# all suites
+for f in tests/test_*.py; do python3 "$f"; done
+
+# a single suite
 python3 tests/test_pii_guardian.py
 ```
 
-76 tests across 6 layers: pattern detection, file readers, hook protocol, path extraction, should-scan filtering, and redactor.
+Suites: `test_pii_guardian` (pattern detection, file readers, hook protocol, path extraction, should-scan filtering, redactor), `test_integration`, `test_mcp_tools`, and `test_david_scenarios` (persona scenarios; see `tests/PERSONA-SCENARIOS.md`).
 
 ## Privacy
 
@@ -80,5 +100,5 @@ python3 tests/test_pii_guardian.py
 ## Conventions
 
 - No em dashes in any output
-- Commit messages: `feat(scope): description` with `Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>`
+- Commit messages: `feat(scope): description`. Disclose AI assistance via the global CLAUDE.md template (`AI-assisted` / `AI contribution` / `Human review`). No `Co-Authored-By` trailer.
 - Plain language in user-facing messages. Save technical terms for developer docs.

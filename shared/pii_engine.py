@@ -56,18 +56,18 @@ SKIP_DIRS = {
 PII_PATTERNS = {
     # --- Standard PII ---
     "SSN": {
-        "pattern": r"\b\d{3}-\d{2}-\d{4}\b",
+        "pattern": re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
         "description": "Social Security Number (XXX-XX-XXXX)",
         "severity": "critical",
     },
     "SSN_NO_DASHES": {
-        "pattern": r"(?<!\d)\d{9}(?!\d)",
+        "pattern": re.compile(r"(?<!\d)\d{9}(?!\d)"),
         "description": "Possible SSN without dashes (9 consecutive digits)",
         "severity": "high",
         "min_context": True,
     },
     "EMAIL": {
-        "pattern": r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b",
+        "pattern": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"),
         "description": "Email address",
         "severity": "medium",
     },
@@ -77,7 +77,7 @@ PII_PATTERNS = {
         # numbers like 619066.6169 and 430163.2581 in financial data.
         # Matches: (401) 555-1234, 401-555-1234, 401 555 1234, +1 401-555-1234
         # Rejects: 6190666169, 619066.6169, 430163.2581, 401.555.1234
-        "pattern": (
+        "pattern": re.compile(
             r"(?<!\d)"                             # no digit before
             r"(?:\+?1[-\s])?"                      # optional country code
             r"(?:"
@@ -94,7 +94,7 @@ PII_PATTERNS = {
         # Match MM/DD/YYYY, MM-DD-YYYY, and YYYY-MM-DD (ISO 8601) when near
         # a birth-related keyword. ISO format is common in SIS API exports
         # (PowerSchool, Infinite Campus). This avoids flagging random dates.
-        "pattern": (
+        "pattern": re.compile(
             r"\b(?:"
             r"(?:0[1-9]|1[0-2])[/-](?:0[1-9]|[12]\d|3[01])[/-](?:19|20)\d{2}"  # MM/DD/YYYY
             r"|"
@@ -109,49 +109,49 @@ PII_PATTERNS = {
 
     # --- Student Identifiers ---
     "SASID": {
-        "pattern": r"\b(?:SASID|sasid)[\s:=]*\d{6,12}\b",
+        "pattern": re.compile(r"\b(?:SASID|sasid)[\s:=]*\d{6,12}\b"),
         "description": "State-Assigned Student ID (SASID)",
         "severity": "critical",
     },
     "STUDENT_ID_LABELED": {
-        "pattern": r"(?i)\b(?:student[_\s]?id|pupil[_\s]?id|sis[_\s]?id|ps[_\s]?id|dcid)[\s:=]*\d{4,10}\b",
+        "pattern": re.compile(r"(?i)\b(?:student[_\s]?id|pupil[_\s]?id|sis[_\s]?id|ps[_\s]?id|dcid)[\s:=]*\d{4,10}\b"),
         "description": "Labeled student identifier",
         "severity": "critical",
     },
     "LUNCH_PIN": {
-        "pattern": r"(?i)\b(?:lunch[_\s]?pin|meal[_\s]?pin|cafeteria[_\s]?pin)[\s:=]*\d{4,6}\b",
+        "pattern": re.compile(r"(?i)\b(?:lunch[_\s]?pin|meal[_\s]?pin|cafeteria[_\s]?pin)[\s:=]*\d{4,6}\b"),
         "description": "Lunch/meal PIN",
         "severity": "high",
     },
 
     # --- FERPA-Protected Fields ---
     "IEP_504_FLAG": {
-        "pattern": r"(?i)\b(?:iep|504[_\s]?plan|individualized[_\s]?education|accommodation[_\s]?plan)\b",
+        "pattern": re.compile(r"(?i)\b(?:iep|504[_\s]?plan|individualized[_\s]?education|accommodation[_\s]?plan)\b"),
         "description": "IEP/504 plan reference (FERPA-protected)",
         "severity": "high",
         "min_context": True,
     },
     "DISCIPLINE_RECORD": {
-        "pattern": r"(?i)\b(?:suspen(?:sion|ded)|expel(?:led|sion)|disciplin(?:e|ary)[_\s]?(?:record|action|incident)|in[_\s]?school[_\s]?suspension|iss|oss)\b",
+        "pattern": re.compile(r"(?i)\b(?:suspen(?:sion|ded)|expel(?:led|sion)|disciplin(?:e|ary)[_\s]?(?:record|action|incident)|in[_\s]?school[_\s]?suspension|iss|oss)\b"),
         "description": "Disciplinary record reference",
         "severity": "high",
         "min_context": True,
     },
     "MEDICAL_INFO": {
-        "pattern": r"(?i)\b(?:diagnos(?:is|ed)|medication|allergy|anaphyla|epinephrine|inhaler|seizure|diabetes|insulin)\b",
+        "pattern": re.compile(r"(?i)\b(?:diagnos(?:is|ed)|medication|allergy|anaphyla|epinephrine|inhaler|seizure|diabetes|insulin)\b"),
         "description": "Medical information",
         "severity": "high",
         "min_context": True,
     },
     "PARENT_GUARDIAN": {
-        "pattern": r"(?i)\b(?:parent[_\s]?(?:name|email|phone|address|contact)|guardian[_\s]?(?:name|email|phone|address|contact)|mother[_\s]?(?:name|email)|father[_\s]?(?:name|email)|emergency[_\s]?contact)\b",
+        "pattern": re.compile(r"(?i)\b(?:parent[_\s]?(?:name|email|phone|address|contact)|guardian[_\s]?(?:name|email|phone|address|contact)|mother[_\s]?(?:name|email)|father[_\s]?(?:name|email)|emergency[_\s]?contact)\b"),
         "description": "Parent/guardian contact information field",
         "severity": "high",
     },
     "HOME_ADDRESS": {
         # Case-insensitive to catch ALL CAPS and lowercase SIS exports.
         # Expanded road types for better coverage of US address formats.
-        "pattern": r"(?i)\b\d{1,5}\s+(?:[a-z]{2,}\s+){1,3}(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|ln|lane|rd|road|ct|court|way|pl(?:ace)?|cir(?:cle)?|ter(?:race)?|pkwy|parkway|hwy|highway|tr(?:ai)?l|loop|run|pike|al(?:le)?y)\b",
+        "pattern": re.compile(r"(?i)\b\d{1,5}\s+(?:[a-z]{2,}\s+){1,3}(?:st(?:reet)?|ave(?:nue)?|blvd|boulevard|dr(?:ive)?|ln|lane|rd|road|ct|court|way|pl(?:ace)?|cir(?:cle)?|ter(?:race)?|pkwy|parkway|hwy|highway|tr(?:ai)?l|loop|run|pike|al(?:le)?y)\b"),
         "description": "Home/street address",
         "severity": "medium",
     },
@@ -400,12 +400,20 @@ def should_scan(filepath: str) -> bool:
     return True
 
 
-def scan_content(content: str, header_line_indices: set = None) -> list[dict]:
+def scan_content(content: str, header_line_indices: set = None,
+                  early_exit: bool = False,
+                  skip_patterns: set = None) -> list[dict]:
     """Scan text content for PII patterns. Returns list of findings.
 
     Each finding includes confidence and header_only fields. When
     header_line_indices is provided (from XLSX reader), matches are
     tracked per-line to determine if they appear only in header rows.
+
+    When early_exit=True, returns immediately after the first CRITICAL
+    finding (used by the hook for faster blocking on large files).
+
+    When skip_patterns is provided, those pattern names are excluded
+    from scanning (e.g., {"SSN", "SSN_NO_DASHES"}).
     """
     if not content:
         return []
@@ -420,6 +428,8 @@ def scan_content(content: str, header_line_indices: set = None) -> list[dict]:
     lines = content.split("\n") if header_line_indices else None
 
     for name, spec in PII_PATTERNS.items():
+        if skip_patterns and name in skip_patterns:
+            continue
         # Handle context requirements
         if spec.get("min_context"):
             # Pattern-specific context keywords override the default set
@@ -433,7 +443,8 @@ def scan_content(content: str, header_line_indices: set = None) -> list[dict]:
                 if not has_edu_context:
                     continue
 
-        matches = re.findall(spec["pattern"], content)
+        compiled = spec["pattern"]
+        matches = compiled.findall(content)
         if matches:
             # Determine if all matches are in header lines only
             header_only = False
@@ -441,7 +452,7 @@ def scan_content(content: str, header_line_indices: set = None) -> list[dict]:
                 has_data_match = False
                 has_header_match = False
                 for line_idx, line in enumerate(lines):
-                    if re.search(spec["pattern"], line):
+                    if compiled.search(line):
                         if line_idx in header_line_indices:
                             has_header_match = True
                         else:
@@ -456,6 +467,10 @@ def scan_content(content: str, header_line_indices: set = None) -> list[dict]:
                 "confidence": "high",
                 "header_only": header_only,
             })
+
+            # Early exit: skip remaining patterns once a CRITICAL match is found
+            if early_exit and spec["severity"] == "critical":
+                return findings
 
     # Calculate confidence scores based on count, co-occurrence, and position
     if findings:

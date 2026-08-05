@@ -1,14 +1,20 @@
 #!/bin/bash
-# install.sh -- Install FERPA Guard as a user-level Claude Code hook
+# install.sh -- Install FERPA Guard as a Claude Code hook
+#
+# Usage:
+#   ./install.sh              Install globally (~/.claude/settings.json)
+#   ./install.sh --project    Install for current project only (.claude/settings.local.json)
+#
+# Project-scoped (--project) is recommended. The hook only fires in projects
+# that contain student data, reducing latency and false positives everywhere else.
 #
 # What it does:
 #   1. Copies pii_guardian.py, pii_scan_report.py, and shared/ to ~/.claude/skills/ferpa-guard/
-#   2. Registers the PreToolUse hook in ~/.claude/settings.json
+#   2. Registers the PreToolUse hook in the chosen settings file
 #   3. Installs openpyxl (for xlsx scanning) with graceful fallback
 #   4. Runs a 5-step self-test
 #
 # What it does NOT do:
-#   - Modify any project-level settings
 #   - Overwrite existing hooks in settings.json (it merges)
 #   - Require sudo
 
@@ -18,17 +24,41 @@ set -euo pipefail
 # Step 0: Define helper functions (before any path resolution)
 # ---------------------------------------------------------------
 FAILURES=0
+INSTALL_MODE="global"
 
 pass() { echo "  [ok] $1"; }
 fail() { echo "  [FAIL] $1"; FAILURES=$((FAILURES+1)); }
 header() { echo ""; echo "==> $1"; }
+
+# Parse arguments
+for arg in "$@"; do
+    case "$arg" in
+        --project) INSTALL_MODE="project" ;;
+        --global)  INSTALL_MODE="global" ;;
+        --help|-h)
+            echo "Usage: ./install.sh [--project | --global]"
+            echo ""
+            echo "  --project  Install hook for the current project only (recommended)"
+            echo "             Writes to .claude/settings.local.json in the current directory"
+            echo "  --global   Install hook for all projects (default)"
+            echo "             Writes to ~/.claude/settings.json"
+            exit 0
+            ;;
+        *) echo "Unknown option: $arg. Use --help for usage."; exit 1 ;;
+    esac
+done
 
 # ---------------------------------------------------------------
 # Step 1: Resolve paths portably
 # ---------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEST="$HOME/.claude/skills/ferpa-guard"
-SETTINGS="$HOME/.claude/settings.json"
+
+if [ "$INSTALL_MODE" = "project" ]; then
+    SETTINGS="$(pwd)/.claude/settings.local.json"
+else
+    SETTINGS="$HOME/.claude/settings.json"
+fi
 
 # ---------------------------------------------------------------
 # Step 2: Copy hook + shared engine
@@ -52,9 +82,9 @@ pass "Set pii_guardian.py executable"
 # ---------------------------------------------------------------
 # Step 3: Merge hook into settings.json using Python json stdlib
 # ---------------------------------------------------------------
-header "Registering PreToolUse hook"
+header "Registering PreToolUse hook ($INSTALL_MODE mode)"
 
-mkdir -p "$HOME/.claude"
+mkdir -p "$(dirname "$SETTINGS")"
 
 python3 - "$SETTINGS" << 'PYEOF'
 import sys, json, os
@@ -173,7 +203,15 @@ if [ "$FAILURES" -gt 0 ]; then
     echo ""
 fi
 echo "  FERPA Guard installed at: ~/.claude/skills/ferpa-guard/"
-echo "  Hook registered in: ~/.claude/settings.json"
+echo "  Hook registered in: $SETTINGS"
+echo ""
+if [ "$INSTALL_MODE" = "project" ]; then
+    echo "  Mode: PROJECT-SCOPED (hook only fires in this project)"
+    echo "  To add to another project, run ./install.sh --project from that directory."
+else
+    echo "  Mode: GLOBAL (hook fires in all projects)"
+    echo "  To limit to specific projects, reinstall with: ./install.sh --project"
+fi
 echo ""
 echo "  It will automatically scan files before Claude reads them."
 echo "  To bypass a specific file: export FERPA_GUARD_ALLOW=\"/path/to/file\""

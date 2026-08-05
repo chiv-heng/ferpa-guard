@@ -1,6 +1,8 @@
 
 # ── Project-specific ──
-.claude/
+# Claude Code — machine-specific (don't commit)
+.claude/settings.local.json
+.claude/memory/
 .bg-shell/
 .planning/
 pii_guardian.egg-info/

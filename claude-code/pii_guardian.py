@@ -22,6 +22,7 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 # Add project root to path so shared package is importable
@@ -39,6 +40,85 @@ from shared.pii_engine import (
 
 
 AUDIT_LOG_PATH = Path.home() / ".claude" / "ferpa-guard-audit.log"
+FEEDBACK_LOG_PATH = Path.home() / ".claude" / "ferpa-guard-feedback.log"
+
+# ---------------------------------------------------------------------------
+# Scan Result Cache (FIX-02)
+# ---------------------------------------------------------------------------
+# Keyed by (resolved_path, mtime, size). If the file hasn't changed,
+# return the cached findings + action instead of re-scanning.
+# Cache TTL: 1 hour max. Disk persistence optional via FERPA_GUARD_CACHE=1.
+
+_CACHE_TTL = 3600  # 1 hour in seconds
+_DISK_CACHE_PATH = Path.home() / ".claude" / "ferpa-guard-cache.json"
+
+# In-memory cache: { (path, mtime, size): { "findings": [...], "cached_at": float } }
+_scan_cache: dict[tuple, dict] = {}
+
+
+def _cache_key(resolved_path: str) -> tuple | None:
+    """Build a cache key from file stat. Returns None if file can't be stat'd."""
+    try:
+        st = os.stat(resolved_path)
+        return (resolved_path, st.st_mtime, st.st_size)
+    except OSError:
+        return None
+
+
+def _cache_get(key: tuple) -> list[dict] | None:
+    """Look up cached findings. Returns None on miss or expired entry."""
+    entry = _scan_cache.get(key)
+    if entry is None:
+        return None
+    if time.time() - entry["cached_at"] > _CACHE_TTL:
+        del _scan_cache[key]
+        return None
+    return entry["findings"]
+
+
+def _cache_put(key: tuple, findings: list[dict]) -> None:
+    """Store findings in cache."""
+    _scan_cache[key] = {"findings": findings, "cached_at": time.time()}
+
+
+def _load_disk_cache() -> None:
+    """Load cache from disk if FERPA_GUARD_CACHE=1 and file exists."""
+    if not os.environ.get("FERPA_GUARD_CACHE"):
+        return
+    if not _DISK_CACHE_PATH.is_file():
+        return
+    try:
+        data = json.loads(_DISK_CACHE_PATH.read_text())
+        now = time.time()
+        for entry in data:
+            key = tuple(entry["key"])
+            if now - entry["cached_at"] <= _CACHE_TTL:
+                _scan_cache[key] = {
+                    "findings": entry["findings"],
+                    "cached_at": entry["cached_at"],
+                }
+    except (json.JSONDecodeError, KeyError, OSError):
+        pass
+
+
+def _save_disk_cache() -> None:
+    """Persist cache to disk if FERPA_GUARD_CACHE=1."""
+    if not os.environ.get("FERPA_GUARD_CACHE"):
+        return
+    try:
+        now = time.time()
+        entries = []
+        for key, val in _scan_cache.items():
+            if now - val["cached_at"] <= _CACHE_TTL:
+                entries.append({
+                    "key": list(key),
+                    "findings": val["findings"],
+                    "cached_at": val["cached_at"],
+                })
+        _DISK_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _DISK_CACHE_PATH.write_text(json.dumps(entries))
+    except OSError:
+        pass
 
 
 def _write_audit_entry(original_path: str, resolved_path: str, source: str):
@@ -62,6 +142,51 @@ def _write_audit_entry(original_path: str, resolved_path: str, source: str):
 # Path Extraction (Claude Code tool input parsing)
 # ---------------------------------------------------------------------------
 
+# Commands that send file content to stdout (and therefore to the LLM context).
+# Only files referenced by these commands need PII scanning.
+_CONTENT_COMMANDS = {
+    "cat", "head", "tail", "less", "more", "bat",
+    "grep", "egrep", "fgrep", "rg",
+    "sed", "awk",
+    "sort", "cut", "paste", "join", "uniq", "tr", "comm",
+    "diff",
+    "python3", "python", "node",
+}
+
+# Commands that only touch file metadata or move files around.
+# These never send file content to the LLM, so scanning is unnecessary.
+_METADATA_COMMANDS = {
+    "ls", "wc", "stat", "file", "du", "find",
+    "mv", "cp", "rm", "mkdir", "chmod", "chown", "touch",
+    "ln", "readlink", "realpath", "basename", "dirname",
+}
+
+
+def _is_content_command(cmd: str) -> bool:
+    """Return True if the Bash command reads file content into stdout.
+
+    Extracts the first token (the command name) and checks it against
+    known content-reading vs metadata-only command sets. Unknown commands
+    default to True (scan conservatively).
+    """
+    # Strip leading env assignments (FOO=bar cmd ...) and sudo
+    stripped = cmd.lstrip()
+    while re.match(r'^[A-Za-z_][A-Za-z0-9_]*=\S+\s+', stripped):
+        stripped = re.sub(r'^[A-Za-z_][A-Za-z0-9_]*=\S+\s+', '', stripped)
+    if stripped.startswith("sudo "):
+        stripped = stripped[5:].lstrip()
+
+    # Get first word (the command)
+    first_word = stripped.split()[0] if stripped.split() else ""
+    # Strip path prefix (e.g., /usr/bin/cat -> cat)
+    cmd_name = first_word.rsplit("/", 1)[-1]
+
+    if cmd_name in _METADATA_COMMANDS:
+        return False
+    # Content commands and unknown commands both return True (conservative)
+    return True
+
+
 def extract_file_paths(tool_name: str, tool_input: dict) -> list[str]:
     """Pull file paths from tool input depending on tool type."""
     paths = []
@@ -73,6 +198,11 @@ def extract_file_paths(tool_name: str, tool_input: dict) -> list[str]:
 
     elif tool_name == "Bash":
         cmd = tool_input.get("command", "")
+
+        # Skip file extraction entirely for metadata-only commands
+        if not _is_content_command(cmd):
+            return []
+
         # Build data extensions pattern (used by multiple regexes below)
         data_exts = "|".join(e.lstrip(".") for e in SCANNABLE_EXTENSIONS)
 
@@ -81,8 +211,8 @@ def extract_file_paths(tool_name: str, tool_input: dict) -> list[str]:
         match = re.findall(rf"{reading_cmds}(?:-\S+\s+)*[\"']?([^\s\"'|;>]+)", cmd)
         paths.extend(match)
 
-        # Processing commands (grep, sed, awk, sort, cut, wc, etc.)
-        processing_cmds = r"(?:grep|egrep|fgrep|sed|awk|sort|cut|wc|diff|comm|paste|join|uniq|tr)\s+"
+        # Processing commands (grep, sed, awk, sort, cut, etc.)
+        processing_cmds = r"(?:grep|egrep|fgrep|sed|awk|sort|cut|diff|comm|paste|join|uniq|tr)\s+"
         proc_match = re.findall(
             rf"{processing_cmds}(?:-\S+\s+)*(?:\"[^\"]*\"\s+|'[^']*'\s+)*[\"']?([^\s\"'|;>]+\.(?:{data_exts}))[\"']?",
             cmd
@@ -169,6 +299,11 @@ def format_block_reason(filepath: str, findings: list[dict]) -> str:
     user_lines.append("  3. Keep only specific safe columns, strip everything else")
     if critical or high:
         user_lines.append("  4. Allowlist this file if it contains no real student data")
+    next_opt = 5 if (critical or high) else 4
+    user_lines.append(f"  {next_opt}. Mark as false positive (logs this for pattern tuning, does not bypass)")
+
+    # Build pattern names string for feedback log command
+    pattern_names = ",".join(f["pattern_name"] for f in findings)
 
     # --- Section 2: Claude-only instructions ---
     claude_lines = [
@@ -188,6 +323,8 @@ def format_block_reason(filepath: str, findings: list[dict]) -> str:
     if critical or high:
         claude_lines.append(f"  Option 4: Add to allowlist: echo \"{filepath}\" >> ~/.claude/ferpa-guard-allow.txt")
         claude_lines.append(f"            Or env var: export FERPA_GUARD_ALLOW=\"{filepath}\"")
+    claude_lines.append(f"  Option {next_opt}: Run via Bash: echo \"$(date -Iseconds) FP path={filepath} patterns={pattern_names}\" >> ~/.claude/ferpa-guard-feedback.log")
+    claude_lines.append(f"            Tell user: logged for future pattern tuning. The file stays blocked this time.")
 
     return "\n".join(user_lines + claude_lines)
 
@@ -259,11 +396,23 @@ def main():
     if tool_name not in ("Read", "Bash", "Edit"):
         output_allow()
 
+    # Load disk cache if enabled
+    _load_disk_cache()
+
     # Load allowlist from environment variable and/or allowlist file.
     # The file-based allowlist (~/.claude/ferpa-guard-allow.txt) lets users
     # add entries from within a conversation without restarting the session.
     # All paths are resolved at load time so both sides of comparison are canonical.
+    #
+    # Pattern-level skip syntax (allowlist file):
+    #   /path/to/file.xlsx SKIP:SSN,SSN_NO_DASHES
+    #   /path/to/directory/ SKIP:MEDICAL_INFO
+    #
+    # Global pattern suppression (env var):
+    #   FERPA_GUARD_SKIP_PATTERNS=SSN,SSN_NO_DASHES
     allowlist_sources: dict[str, str] = {}
+    # Maps resolved path -> set of pattern names to skip for that path
+    path_skip_patterns: dict[str, set] = {}
 
     allowlist_raw = os.environ.get("FERPA_GUARD_ALLOW", "")
     for p in allowlist_raw.split(","):
@@ -271,13 +420,31 @@ def main():
         if p:
             allowlist_sources[str(Path(p).resolve())] = "env(FERPA_GUARD_ALLOW)"
 
+    # Global pattern suppression via env var
+    global_skip_patterns: set = set()
+    skip_env = os.environ.get("FERPA_GUARD_SKIP_PATTERNS", "")
+    for pat in skip_env.split(","):
+        pat = pat.strip()
+        if pat:
+            global_skip_patterns.add(pat)
+
     allowlist_file = Path.home() / ".claude" / "ferpa-guard-allow.txt"
     if allowlist_file.is_file():
         try:
             for line in allowlist_file.read_text().splitlines():
                 line = line.strip()
                 if line and not line.startswith("#"):
-                    allowlist_sources[str(Path(line).resolve())] = f"file({allowlist_file})"
+                    # Parse pattern-level skip: "/path/to/file SKIP:SSN,DOB"
+                    skip_match = re.match(r'^(.+?)\s+SKIP:(.+)$', line)
+                    if skip_match:
+                        entry_path = skip_match.group(1).strip()
+                        skip_names = {s.strip() for s in skip_match.group(2).split(",")}
+                        resolved_entry = str(Path(entry_path).resolve())
+                        path_skip_patterns[resolved_entry] = skip_names
+                        # Source tracking for audit log
+                        allowlist_sources.setdefault(resolved_entry, f"file({allowlist_file})")
+                    else:
+                        allowlist_sources[str(Path(line).resolve())] = f"file({allowlist_file})"
         except OSError:
             pass
 
@@ -295,11 +462,21 @@ def main():
         # Allowlist supports exact paths and directory prefixes.
         # Both the file path and allowlist entries are resolved to canonical paths.
         resolved = str(Path(fp).resolve())
+
+        # Check for pattern-level skip first (SKIP entries don't fully bypass)
+        file_skip = set(global_skip_patterns)
+        for a in path_skip_patterns:
+            if resolved == a or resolved.startswith(a.rstrip("/") + "/"):
+                file_skip |= path_skip_patterns[a]
+
+        # Check for full bypass (entries without SKIP)
         matched_entry = None
         for a in allowlist_sources:
-            if resolved == a or resolved.startswith(a.rstrip("/") + "/"):
-                matched_entry = a
-                break
+            # Only full-bypass entries (not SKIP entries) trigger allowlist bypass
+            if a not in path_skip_patterns:
+                if resolved == a or resolved.startswith(a.rstrip("/") + "/"):
+                    matched_entry = a
+                    break
         if matched_entry is not None:
             _write_audit_entry(fp, resolved, allowlist_sources[matched_entry])
             continue
@@ -313,13 +490,29 @@ def main():
         except OSError:
             continue
 
+        # Check cache before scanning (FIX-02)
+        cache_key = _cache_key(resolved)
+        if cache_key and not file_skip:
+            cached = _cache_get(cache_key)
+            if cached is not None:
+                if cached:
+                    all_findings[fp] = cached
+                continue
+
         scan_input = read_file_content(fp)
-        findings = scan_content(scan_input.content, scan_input.header_line_indices)
+        findings = scan_content(scan_input.content, scan_input.header_line_indices,
+                                early_exit=True,
+                                skip_patterns=file_skip if file_skip else None)
+
+        # Cache the result (only when no skip_patterns, since skips change results)
+        if cache_key and not file_skip:
+            _cache_put(cache_key, findings)
 
         if findings:
             all_findings[fp] = findings
 
     if not all_findings:
+        _save_disk_cache()
         output_allow()
 
     # Strict mode: any finding = block (restores pre-confidence behavior)
@@ -329,6 +522,7 @@ def main():
             for f in findings:
                 f["confidence"] = "high"
             reasons.append(format_block_reason(fp, findings))
+        _save_disk_cache()
         output_deny("\n\n".join(reasons))
 
     # Partition files by their worst action
@@ -349,6 +543,7 @@ def main():
         reasons = []
         for fp, findings in block_files.items():
             reasons.append(format_block_reason(fp, findings))
+        _save_disk_cache()
         output_deny("\n\n".join(reasons))
 
     # Warn and log go to stderr but allow the tool call
@@ -357,6 +552,7 @@ def main():
     for fp in log_files:
         print(format_log_note(fp), file=sys.stderr)
 
+    _save_disk_cache()
     output_allow()
 
 

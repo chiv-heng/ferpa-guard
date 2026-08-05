@@ -15,9 +15,11 @@ Run:  python3 scripts/test_pii_guardian.py
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -599,8 +601,9 @@ class TestPathExtraction(unittest.TestCase):
         self.assertIn("/data/students.csv", paths)
 
     def test_bash_wc(self):
+        # wc is metadata-only (FIX-07), so no paths should be extracted
         paths = pg_hook.extract_file_paths("Bash", {"command": "wc -l /data/roster.csv"})
-        self.assertIn("/data/roster.csv", paths)
+        self.assertEqual(paths, [])
 
     # --- Pipe tests ---
 
@@ -1628,6 +1631,547 @@ class TestAuditLogging(unittest.TestCase):
                 self.assertFalse(audit_log.exists(), "No audit log when file is blocked")
             finally:
                 os.unlink(data_path)
+
+
+# ---------------------------------------------------------------------------
+# Layer 13: Pre-compiled Patterns (FIX-04)
+# ---------------------------------------------------------------------------
+
+class TestPreCompiledPatterns(unittest.TestCase):
+    """Verify that PII_PATTERNS uses pre-compiled regex objects."""
+
+    def test_patterns_are_compiled(self):
+        """Every pattern in PII_PATTERNS should be a compiled regex, not a string."""
+        from shared.pii_engine import PII_PATTERNS
+        for name, spec in PII_PATTERNS.items():
+            self.assertIsInstance(
+                spec["pattern"], re.Pattern,
+                f"{name} pattern should be re.compile()'d, got {type(spec['pattern'])}",
+            )
+
+    def test_compiled_patterns_still_match(self):
+        """Compiled patterns produce the same results as before."""
+        # SSN
+        findings = scan_content("SSN: 123-45-6789")
+        self.assertIn("SSN", [f["pattern_name"] for f in findings])
+        # Email
+        findings = scan_content("contact: parent@school.edu")
+        self.assertIn("EMAIL", [f["pattern_name"] for f in findings])
+        # Phone
+        findings = scan_content("call 401-555-1234")
+        self.assertIn("PHONE", [f["pattern_name"] for f in findings])
+
+
+# ---------------------------------------------------------------------------
+# Layer 14: Early Exit on CRITICAL (FIX-05)
+# ---------------------------------------------------------------------------
+
+class TestEarlyExit(unittest.TestCase):
+    """Verify early_exit mode stops scanning after first CRITICAL finding."""
+
+    def test_early_exit_returns_on_critical(self):
+        """With early_exit=True, scanning stops at the first CRITICAL match."""
+        # This text has SSN (critical) + email (medium) + phone (medium)
+        text = "SSN: 123-45-6789, parent@school.edu, 401-555-1234"
+        findings_early = scan_content(text, early_exit=True)
+        findings_full = scan_content(text, early_exit=False)
+
+        # Early exit should find SSN (critical) and stop
+        early_names = [f["pattern_name"] for f in findings_early]
+        self.assertIn("SSN", early_names)
+        # Full scan should find more patterns
+        self.assertGreater(len(findings_full), len(findings_early))
+
+    def test_early_exit_skips_confidence_scoring(self):
+        """Early exit findings skip confidence calculation (stay at default 'high')."""
+        text = "SASID: 123456789"
+        findings = scan_content(text, early_exit=True)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["confidence"], "high")
+
+    def test_no_early_exit_finds_all(self):
+        """Without early_exit, all patterns are checked."""
+        text = "student_id: 12345, parent@school.edu, 401-555-1234, 123 Main Street"
+        findings = scan_content(text, early_exit=False)
+        names = [f["pattern_name"] for f in findings]
+        self.assertIn("STUDENT_ID_LABELED", names)
+        self.assertIn("EMAIL", names)
+
+    def test_early_exit_no_critical_scans_all(self):
+        """With early_exit=True but no CRITICAL patterns, all patterns are checked."""
+        text = "student record: parent@school.edu, 401-555-1234"
+        findings = scan_content(text, early_exit=True)
+        names = [f["pattern_name"] for f in findings]
+        self.assertIn("EMAIL", names)
+        self.assertIn("PHONE", names)
+
+    def test_early_exit_default_is_false(self):
+        """Default early_exit is False (backward compatible)."""
+        text = "SSN: 123-45-6789, parent@school.edu"
+        findings = scan_content(text)
+        names = [f["pattern_name"] for f in findings]
+        # Should find both SSN and EMAIL with default
+        self.assertIn("SSN", names)
+        self.assertIn("EMAIL", names)
+
+
+# ---------------------------------------------------------------------------
+# Layer 15: Pattern-Level Skip (FIX-03)
+# ---------------------------------------------------------------------------
+
+class TestPatternLevelSkip(unittest.TestCase):
+    """Test skip_patterns parameter in scan_content and allowlist parsing."""
+
+    def test_skip_ssn_keeps_other_findings(self):
+        """Skipping SSN still detects email and other patterns."""
+        text = "SSN: 123-45-6789, parent@school.edu, student record"
+        findings = scan_content(text, skip_patterns={"SSN"})
+        names = [f["pattern_name"] for f in findings]
+        self.assertNotIn("SSN", names)
+        self.assertIn("EMAIL", names)
+
+    def test_skip_multiple_patterns(self):
+        """Can skip multiple patterns at once."""
+        text = "SSN: 123-45-6789 enrollment 123456789 parent@school.edu"
+        findings = scan_content(text, skip_patterns={"SSN", "SSN_NO_DASHES"})
+        names = [f["pattern_name"] for f in findings]
+        self.assertNotIn("SSN", names)
+        self.assertNotIn("SSN_NO_DASHES", names)
+        self.assertIn("EMAIL", names)
+
+    def test_skip_none_scans_all(self):
+        """skip_patterns=None scans everything (backward compatible)."""
+        text = "SSN: 123-45-6789"
+        findings = scan_content(text, skip_patterns=None)
+        names = [f["pattern_name"] for f in findings]
+        self.assertIn("SSN", names)
+
+    def test_skip_empty_set_scans_all(self):
+        """Empty skip set scans everything."""
+        text = "SSN: 123-45-6789"
+        findings = scan_content(text, skip_patterns=set())
+        names = [f["pattern_name"] for f in findings]
+        self.assertIn("SSN", names)
+
+    def test_skip_all_patterns_returns_empty(self):
+        """Skipping every matching pattern returns empty findings."""
+        text = "SSN: 123-45-6789"
+        findings = scan_content(text, skip_patterns={"SSN"})
+        self.assertEqual(findings, [])
+
+
+class TestPatternLevelSkipHook(unittest.TestCase):
+    """Test pattern-level skip via allowlist file and env var in the hook."""
+
+    SCRIPT = str(_claude_code_dir / "pii_guardian.py") if _claude_code_dir.is_dir() else str(Path(__file__).parent / "pii_guardian.py")
+
+    def _run_hook(self, tool_name, tool_input, env_extra=None):
+        payload = json.dumps({"tool_name": tool_name, "tool_input": tool_input})
+        env = os.environ.copy()
+        if env_extra:
+            env.update(env_extra)
+        result = subprocess.run(
+            [sys.executable, self.SCRIPT],
+            input=payload,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        return result
+
+    def test_skip_patterns_env_var(self):
+        """FERPA_GUARD_SKIP_PATTERNS suppresses specific patterns globally."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            # File has SSN (critical) which would normally block
+            f.write("name,ssn\nJane,123-45-6789\n")
+            path = f.name
+        try:
+            result = self._run_hook(
+                "Read", {"file_path": path},
+                env_extra={"FERPA_GUARD_SKIP_PATTERNS": "SSN"},
+            )
+            # With SSN skipped, no critical findings remain -> should allow
+            self.assertEqual(result.returncode, 0)
+        finally:
+            os.unlink(path)
+
+    def test_skip_patterns_allowlist_file(self):
+        """SKIP:SSN in allowlist file suppresses SSN but keeps other scanning."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            # Has SSN (critical) + SASID (critical)
+            f.write("name,ssn,sasid\nJane,123-45-6789,SASID 987654321\n")
+            data_path = f.name
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                claude_dir = Path(tmpdir) / ".claude"
+                claude_dir.mkdir()
+                allowlist_path = claude_dir / "ferpa-guard-allow.txt"
+                # Skip SSN only; SASID should still trigger
+                allowlist_path.write_text(f"{data_path} SKIP:SSN\n")
+
+                result = self._run_hook(
+                    "Read", {"file_path": data_path},
+                    env_extra={"HOME": tmpdir},
+                )
+                # SASID is still critical -> should still block
+                self.assertEqual(result.returncode, 2)
+                # But SSN should not appear in the findings
+                self.assertNotIn("Social Security", result.stderr)
+                # SASID should appear
+                self.assertIn("SASID", result.stderr)
+            finally:
+                os.unlink(data_path)
+
+    def test_skip_patterns_directory_prefix(self):
+        """SKIP with directory prefix applies to all files under that directory."""
+        with tempfile.TemporaryDirectory() as data_dir:
+            data_path = os.path.join(data_dir, "students.csv")
+            with open(data_path, "w") as f:
+                f.write("name,ssn\nJane,123-45-6789\n")
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                try:
+                    claude_dir = Path(tmpdir) / ".claude"
+                    claude_dir.mkdir()
+                    allowlist_path = claude_dir / "ferpa-guard-allow.txt"
+                    # Skip SSN for entire directory
+                    allowlist_path.write_text(f"{data_dir}/ SKIP:SSN\n")
+
+                    result = self._run_hook(
+                        "Read", {"file_path": data_path},
+                        env_extra={"HOME": tmpdir},
+                    )
+                    # With SSN skipped, no critical findings -> should allow
+                    self.assertEqual(result.returncode, 0)
+                finally:
+                    pass
+
+    def test_full_bypass_still_works_with_skip_entries(self):
+        """Full bypass (no SKIP) still works when SKIP entries also exist."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            f.write("name,ssn\nJane,123-45-6789\n")
+            data_path = f.name
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                claude_dir = Path(tmpdir) / ".claude"
+                claude_dir.mkdir()
+                allowlist_path = claude_dir / "ferpa-guard-allow.txt"
+                # Both a SKIP entry for some other path and a full bypass for this file
+                allowlist_path.write_text(
+                    f"/some/other/path SKIP:SSN\n{data_path}\n"
+                )
+
+                result = self._run_hook(
+                    "Read", {"file_path": data_path},
+                    env_extra={"HOME": tmpdir},
+                )
+                # Full bypass -> exit 0
+                self.assertEqual(result.returncode, 0)
+            finally:
+                os.unlink(data_path)
+
+
+# ---------------------------------------------------------------------------
+# Layer 16: Smarter Bash Filtering (FIX-07)
+# ---------------------------------------------------------------------------
+
+class TestBashContentFiltering(unittest.TestCase):
+    """Test that metadata-only Bash commands skip file scanning."""
+
+    def test_ls_no_paths_extracted(self):
+        """ls should not extract file paths."""
+        paths = pg_hook.extract_file_paths("Bash", {"command": "ls /data/students.csv"})
+        self.assertEqual(paths, [])
+
+    def test_wc_no_paths_extracted(self):
+        """wc should not extract file paths."""
+        paths = pg_hook.extract_file_paths("Bash", {"command": "wc -l /data/roster.csv"})
+        self.assertEqual(paths, [])
+
+    def test_mv_no_paths_extracted(self):
+        """mv should not extract file paths."""
+        paths = pg_hook.extract_file_paths("Bash", {"command": "mv old.csv new.csv"})
+        self.assertEqual(paths, [])
+
+    def test_cp_no_paths_extracted(self):
+        """cp should not extract file paths."""
+        paths = pg_hook.extract_file_paths("Bash", {"command": "cp data.csv backup.csv"})
+        self.assertEqual(paths, [])
+
+    def test_stat_no_paths_extracted(self):
+        """stat should not extract file paths."""
+        paths = pg_hook.extract_file_paths("Bash", {"command": "stat /data/students.csv"})
+        self.assertEqual(paths, [])
+
+    def test_rm_no_paths_extracted(self):
+        """rm should not extract file paths."""
+        paths = pg_hook.extract_file_paths("Bash", {"command": "rm /data/old.csv"})
+        self.assertEqual(paths, [])
+
+    def test_find_no_paths_extracted(self):
+        """find should not extract file paths."""
+        paths = pg_hook.extract_file_paths("Bash", {"command": "find /data -name '*.csv'"})
+        self.assertEqual(paths, [])
+
+    def test_du_no_paths_extracted(self):
+        """du should not extract file paths."""
+        paths = pg_hook.extract_file_paths("Bash", {"command": "du -sh /data/students.csv"})
+        self.assertEqual(paths, [])
+
+    def test_chmod_no_paths_extracted(self):
+        """chmod should not extract file paths."""
+        paths = pg_hook.extract_file_paths("Bash", {"command": "chmod 644 /data/students.csv"})
+        self.assertEqual(paths, [])
+
+    def test_cat_still_extracts(self):
+        """cat (content command) should still extract paths."""
+        paths = pg_hook.extract_file_paths("Bash", {"command": "cat /data/students.csv"})
+        self.assertIn("/data/students.csv", paths)
+
+    def test_grep_still_extracts(self):
+        """grep (content command) should still extract paths."""
+        paths = pg_hook.extract_file_paths("Bash", {"command": 'grep "pattern" /data/students.csv'})
+        self.assertIn("/data/students.csv", paths)
+
+    def test_head_still_extracts(self):
+        """head (content command) should still extract paths."""
+        paths = pg_hook.extract_file_paths("Bash", {"command": "head -20 /data/file.tsv"})
+        self.assertIn("/data/file.tsv", paths)
+
+    def test_sudo_ls_no_paths(self):
+        """sudo ls should also skip scanning."""
+        paths = pg_hook.extract_file_paths("Bash", {"command": "sudo ls /data/students.csv"})
+        self.assertEqual(paths, [])
+
+    def test_env_prefix_ls_no_paths(self):
+        """FOO=bar ls should also skip scanning."""
+        paths = pg_hook.extract_file_paths("Bash", {"command": "FOO=bar ls /data/students.csv"})
+        self.assertEqual(paths, [])
+
+    def test_unknown_command_scans_conservatively(self):
+        """Unknown commands should still extract paths (conservative)."""
+        paths = pg_hook.extract_file_paths("Bash", {"command": "mycustomtool /data/students.csv"})
+        self.assertIn("/data/students.csv", paths)
+
+    def test_is_content_command_helper(self):
+        """Direct test of _is_content_command helper."""
+        self.assertTrue(pg_hook._is_content_command("cat file.csv"))
+        self.assertTrue(pg_hook._is_content_command("grep pattern file.csv"))
+        self.assertFalse(pg_hook._is_content_command("ls file.csv"))
+        self.assertFalse(pg_hook._is_content_command("wc -l file.csv"))
+        self.assertFalse(pg_hook._is_content_command("mv a.csv b.csv"))
+
+
+# ---------------------------------------------------------------------------
+# Layer 17: Scan Result Caching (FIX-02)
+# ---------------------------------------------------------------------------
+
+class TestScanCache(unittest.TestCase):
+    """Test mtime-based scan result caching."""
+
+    def test_cache_hit_same_file(self):
+        """Scanning the same unchanged file twice uses the cache."""
+        hook = pg_hook
+        # Clear any existing cache
+        hook._scan_cache.clear()
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            f.write("name,ssn\nJane,123-45-6789\n")
+            path = f.name
+
+        try:
+            resolved = str(Path(path).resolve())
+            key = hook._cache_key(resolved)
+            self.assertIsNotNone(key)
+
+            # First call: miss
+            self.assertIsNone(hook._cache_get(key))
+
+            # Store findings
+            findings = [{"pattern_name": "SSN", "severity": "critical",
+                         "count": 1, "confidence": "high"}]
+            hook._cache_put(key, findings)
+
+            # Second call: hit
+            cached = hook._cache_get(key)
+            self.assertIsNotNone(cached)
+            self.assertEqual(cached[0]["pattern_name"], "SSN")
+        finally:
+            os.unlink(path)
+            hook._scan_cache.clear()
+
+    def test_cache_miss_after_modification(self):
+        """Modifying a file invalidates the cache (different mtime/size)."""
+        hook = pg_hook
+        hook._scan_cache.clear()
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            f.write("name,ssn\nJane,123-45-6789\n")
+            path = f.name
+
+        try:
+            resolved = str(Path(path).resolve())
+            key1 = hook._cache_key(resolved)
+            hook._cache_put(key1, [{"pattern_name": "SSN"}])
+
+            # Modify the file
+            import time as _time
+            _time.sleep(0.05)  # Ensure mtime changes
+            with open(path, "a") as f:
+                f.write("extra row\n")
+
+            key2 = hook._cache_key(resolved)
+            # Keys differ because mtime/size changed
+            self.assertNotEqual(key1, key2)
+            # New key has no cache entry
+            self.assertIsNone(hook._cache_get(key2))
+        finally:
+            os.unlink(path)
+            hook._scan_cache.clear()
+
+    def test_cache_ttl_expiry(self):
+        """Cache entries expire after TTL."""
+        hook = pg_hook
+        hook._scan_cache.clear()
+
+        key = ("/tmp/test.csv", 1000.0, 100)
+        # Insert with a timestamp in the past (beyond TTL)
+        hook._scan_cache[key] = {
+            "findings": [{"pattern_name": "SSN"}],
+            "cached_at": time.time() - hook._CACHE_TTL - 1,
+        }
+
+        # Should return None (expired)
+        self.assertIsNone(hook._cache_get(key))
+        # Expired entry should be cleaned up
+        self.assertNotIn(key, hook._scan_cache)
+
+    def test_cache_empty_findings(self):
+        """Empty findings (clean file) are also cached."""
+        hook = pg_hook
+        hook._scan_cache.clear()
+
+        key = ("/tmp/clean.csv", 2000.0, 50)
+        hook._cache_put(key, [])
+
+        cached = hook._cache_get(key)
+        self.assertIsNotNone(cached)
+        self.assertEqual(cached, [])
+
+    def test_nonexistent_file_no_cache_key(self):
+        """Non-existent file produces no cache key."""
+        hook = pg_hook
+        key = hook._cache_key("/tmp/no_such_file_cache_test.csv")
+        self.assertIsNone(key)
+
+
+class TestScanCacheDisk(unittest.TestCase):
+    """Test disk persistence of scan cache."""
+
+    SCRIPT = str(_claude_code_dir / "pii_guardian.py") if _claude_code_dir.is_dir() else str(Path(__file__).parent / "pii_guardian.py")
+
+    def _run_hook(self, tool_name, tool_input, env_extra=None):
+        payload = json.dumps({"tool_name": tool_name, "tool_input": tool_input})
+        env = os.environ.copy()
+        if env_extra:
+            env.update(env_extra)
+        result = subprocess.run(
+            [sys.executable, self.SCRIPT],
+            input=payload,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        return result
+
+    def test_disk_cache_created_when_enabled(self):
+        """FERPA_GUARD_CACHE=1 creates a cache file on disk."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            f.write("name,ssn\nJane,123-45-6789\n")
+            data_path = f.name
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                claude_dir = Path(tmpdir) / ".claude"
+                claude_dir.mkdir()
+                cache_path = claude_dir / "ferpa-guard-cache.json"
+
+                self._run_hook(
+                    "Read", {"file_path": data_path},
+                    env_extra={"HOME": tmpdir, "FERPA_GUARD_CACHE": "1"},
+                )
+
+                self.assertTrue(cache_path.exists(), "Disk cache file should be created")
+                data = json.loads(cache_path.read_text())
+                self.assertIsInstance(data, list)
+            finally:
+                os.unlink(data_path)
+
+
+# ---------------------------------------------------------------------------
+# Layer 18: False Positive Feedback (FIX-06)
+# ---------------------------------------------------------------------------
+
+class TestFalsePositiveFeedback(unittest.TestCase):
+    """Test that block output includes false positive option."""
+
+    SCRIPT = str(_claude_code_dir / "pii_guardian.py") if _claude_code_dir.is_dir() else str(Path(__file__).parent / "pii_guardian.py")
+
+    def _run_hook(self, tool_name, tool_input, env_extra=None):
+        payload = json.dumps({"tool_name": tool_name, "tool_input": tool_input})
+        env = os.environ.copy()
+        if env_extra:
+            env.update(env_extra)
+        result = subprocess.run(
+            [sys.executable, self.SCRIPT],
+            input=payload,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        return result
+
+    def test_block_output_includes_false_positive_option(self):
+        """Block output should include 'Mark as false positive' option."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            f.write("name,ssn\nJane,123-45-6789\n")
+            path = f.name
+        try:
+            result = self._run_hook("Read", {"file_path": path})
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("Mark as false positive", result.stderr)
+            self.assertIn("ferpa-guard-feedback.log", result.stderr)
+        finally:
+            os.unlink(path)
+
+    def test_feedback_option_number_with_critical(self):
+        """With critical/high findings (option 4 = allowlist), feedback is option 5."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            f.write("name,ssn\nJane,123-45-6789\n")
+            path = f.name
+        try:
+            result = self._run_hook("Read", {"file_path": path})
+            stderr = result.stderr
+            # Option 4 is allowlist, option 5 is false positive
+            self.assertIn("4. Allowlist", stderr)
+            self.assertIn("5. Mark as false positive", stderr)
+        finally:
+            os.unlink(path)
+
+    def test_feedback_includes_pattern_names(self):
+        """Feedback command in Claude instructions includes pattern names."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            f.write("name,ssn\nJane,123-45-6789\n")
+            path = f.name
+        try:
+            result = self._run_hook("Read", {"file_path": path})
+            stderr = result.stderr
+            self.assertIn("patterns=SSN", stderr)
+            self.assertIn("stays blocked", stderr)
+        finally:
+            os.unlink(path)
 
 
 if __name__ == "__main__":
