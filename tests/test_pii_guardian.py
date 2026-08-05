@@ -377,6 +377,26 @@ class TestHookProtocol(unittest.TestCase):
         finally:
             os.unlink(path)
 
+    def test_readme_md_allowed_despite_blocking_content(self):
+        """SKIP_FILENAMES: a readme.md is documentation-by-convention and is
+        never scanned, even when its text would otherwise block."""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "readme.md")
+            with open(path, "w") as f:
+                f.write("Example row: SSN 123-45-6789, SASID: 1234567890\n")
+            result = self._run_hook("Read", {"file_path": path})
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stdout.strip(), "")
+
+    def test_notreadme_md_still_blocked(self):
+        """A near-miss basename gets no exemption."""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "notreadme.md")
+            with open(path, "w") as f:
+                f.write("Example row: SSN 123-45-6789, SASID: 1234567890\n")
+            result = self._run_hook("Read", {"file_path": path})
+            self.assertEqual(result.returncode, 2)
+
     def test_deny_csv_with_ssn(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
             f.write("name,ssn\nJane,123-45-6789\n")
@@ -680,6 +700,34 @@ class TestShouldScan(unittest.TestCase):
 
     def test_claude_dir_skipped(self):
         self.assertFalse(should_scan("/project/.claude/settings.json"))
+
+    # --- SKIP_FILENAMES: doc-convention basenames are exempt (live parity) ---
+
+    def test_readme_md_skipped(self):
+        self.assertFalse(should_scan("/data/readme.md"))
+
+    def test_readme_case_insensitive_skipped(self):
+        self.assertFalse(should_scan("/data/README.MD"))
+
+    def test_claude_md_skipped(self):
+        self.assertFalse(should_scan("/project/CLAUDE.md"))
+
+    def test_agent_md_skipped(self):
+        self.assertFalse(should_scan("/project/AGENT.md"))
+
+    def test_agents_md_skipped(self):
+        self.assertFalse(should_scan("/project/agents.md"))
+
+    def test_notreadme_still_scanned(self):
+        """Exact basename match only -- no substring/glob semantics."""
+        self.assertTrue(should_scan("/data/notreadme.md"))
+
+    def test_readme_in_subdir_skipped(self):
+        self.assertFalse(should_scan("/data/docs/readme.md"))
+
+    def test_readme_txt_not_exempt(self):
+        """The exemption is the exact basename, not the stem."""
+        self.assertTrue(should_scan("/data/readme.txt"))
 
 
 # ---------------------------------------------------------------------------

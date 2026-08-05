@@ -49,6 +49,12 @@ SKIP_DIRS = {
     ".claude", ".planning", ".backups",
 }
 
+# Documentation-convention basenames, exempt by exact (case-insensitive) name.
+# Naming a column in docs is not disclosing a record; scanning these files
+# blocked documentation ABOUT student data and locked files out of their own
+# remediation. Exact-name match only -- never substring or glob.
+SKIP_FILENAMES = {"claude.md", "readme.md", "agent.md", "agents.md"}
+
 # ---------------------------------------------------------------------------
 # PII Pattern Registry
 # ---------------------------------------------------------------------------
@@ -391,6 +397,9 @@ def should_scan(filepath: str) -> bool:
     p = Path(filepath)
 
     if p.suffix.lower() not in SCANNABLE_EXTENSIONS:
+        return False
+
+    if p.name.lower() in SKIP_FILENAMES:
         return False
 
     for part in p.parts:
