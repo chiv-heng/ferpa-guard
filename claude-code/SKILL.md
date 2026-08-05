@@ -141,7 +141,7 @@ Registered at user level in `~/.claude/settings.json`:
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Read|Bash|Edit",
+        "matcher": "Read|Bash",
         "hooks": [
           {
             "type": "command",

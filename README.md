@@ -145,7 +145,7 @@ export FERPA_GUARD_ALLOW="/path/to/safe-template.csv,/path/to/other.json"
 /path/to/test-data/
 ```
 
-All bypasses are logged to `~/.claude/ferpa-guard-audit.log` for FERPA compliance.
+Every decision — blocks, warnings, log notes, and allowlist bypasses — is recorded as JSON lines in `~/.claude/logs/ferpa-guard-audit.jsonl` for FERPA compliance. Records carry pattern names only, never the matched values.
 
 ## Project structure
 
