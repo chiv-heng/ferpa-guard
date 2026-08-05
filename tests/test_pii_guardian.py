@@ -38,6 +38,8 @@ from shared.pii_engine import (
     read_file_content,
     should_scan,
     decide_action,
+    collect_allowfile_entries,
+    ALLOWFILE_NAME,
 )
 
 # Hook functions (used by path extraction tests)
@@ -508,29 +510,57 @@ class TestHookProtocol(unittest.TestCase):
             os.unlink(path)
 
     def test_allowlist_file_bypass(self):
-        """File-based allowlist (~/.claude/ferpa-guard-allow.txt) should bypass."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
-            f.write("name,ssn\nJane,123-45-6789\n")
-            data_path = f.name
+        """File-based allowlist (~/.claude/ferpa-guard-allow.txt) should bypass.
 
-        allowlist_file = Path.home() / ".claude" / "ferpa-guard-allow.txt"
-        had_existing = allowlist_file.exists()
-        existing_content = allowlist_file.read_text() if had_existing else ""
-        try:
-            # Append the test file path to the allowlist
+        Runs against a temporary HOME so the developer's real allowlist is
+        never touched (the hook derives the path via Path.home()).
+        """
+        with tempfile.TemporaryDirectory() as home_dir:
+            data_path = os.path.join(home_dir, "students.csv")
+            with open(data_path, "w") as f:
+                f.write("name,ssn\nJane,123-45-6789\n")
+
+            allowlist_file = Path(home_dir) / ".claude" / "ferpa-guard-allow.txt"
             allowlist_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(allowlist_file, "a") as af:
-                af.write(f"\n{data_path}\n")
+            allowlist_file.write_text(f"{data_path}\n")
 
-            result = self._run_hook("Read", {"file_path": data_path})
+            result = self._run_hook(
+                "Read", {"file_path": data_path}, env_extra={"HOME": home_dir}
+            )
             self.assertEqual(result.returncode, 0)
-        finally:
-            os.unlink(data_path)
-            # Restore original allowlist file state
-            if had_existing:
-                allowlist_file.write_text(existing_content)
-            else:
-                allowlist_file.unlink(missing_ok=True)
+
+    def test_allowfile_bypasses_listed_file_only(self):
+        """A .pii-guardian-allow dotfile in the data directory bypasses the
+        listed basename; an unlisted sibling still blocks (fixture parity)."""
+        with tempfile.TemporaryDirectory() as home_dir:
+            data_dir = Path(home_dir) / "allowed"
+            data_dir.mkdir()
+            covered = data_dir / "registration.csv"
+            covered.write_text("name,ssn\nJane,123-45-6789\n")
+            uncovered = data_dir / "uncovered.csv"
+            uncovered.write_text("name,ssn\nJane,123-45-6789\n")
+            (data_dir / ".pii-guardian-allow").write_text(
+                "# fixture parity\nregistration.csv\n"
+            )
+            env = {"HOME": home_dir}
+            result = self._run_hook("Read", {"file_path": str(covered)}, env_extra=env)
+            self.assertEqual(result.returncode, 0)
+            result = self._run_hook("Read", {"file_path": str(uncovered)}, env_extra=env)
+            self.assertEqual(result.returncode, 2)
+
+    def test_allowfile_no_restart_freshness(self):
+        """Writing the allowfile between invocations takes effect immediately."""
+        with tempfile.TemporaryDirectory() as home_dir:
+            data_dir = Path(home_dir) / "data"
+            data_dir.mkdir()
+            target = data_dir / "roster.csv"
+            target.write_text("name,ssn\nJane,123-45-6789\n")
+            env = {"HOME": home_dir}
+            result = self._run_hook("Read", {"file_path": str(target)}, env_extra=env)
+            self.assertEqual(result.returncode, 2)
+            (data_dir / ".pii-guardian-allow").write_text("roster.csv\n")
+            result = self._run_hook("Read", {"file_path": str(target)}, env_extra=env)
+            self.assertEqual(result.returncode, 0)
 
     def test_bash_cat_detection(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
@@ -728,6 +758,100 @@ class TestShouldScan(unittest.TestCase):
     def test_readme_txt_not_exempt(self):
         """The exemption is the exact basename, not the stem."""
         self.assertTrue(should_scan("/data/readme.txt"))
+
+
+# ---------------------------------------------------------------------------
+# Layer 5b: .pii-guardian-allow ancestor-walk allowfile (engine functions)
+# ---------------------------------------------------------------------------
+
+class TestAllowfileWalk(unittest.TestCase):
+    """Directory-walking allowfile: dotfiles in the target's ancestors declare
+    allowed entries, read fresh on every call (the no-restart escape hatch)."""
+
+    def _write_allowfile(self, directory, lines):
+        af = Path(directory) / ALLOWFILE_NAME
+        af.write_text("\n".join(lines) + "\n")
+        return af
+
+    def test_allowfile_in_same_directory(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "registration.csv"
+            target.write_text("x")
+            af = self._write_allowfile(d, ["registration.csv"])
+            entries = collect_allowfile_entries(str(target))
+            self.assertIn(str(target.resolve()), entries)
+            self.assertEqual(entries[str(target.resolve())], str(af.resolve()))
+
+    def test_allowfile_in_grandparent(self):
+        with tempfile.TemporaryDirectory() as d:
+            sub = Path(d) / "a" / "b"
+            sub.mkdir(parents=True)
+            target = sub / "data.csv"
+            target.write_text("x")
+            af = self._write_allowfile(d, ["a/b/data.csv"])
+            entries = collect_allowfile_entries(str(target))
+            self.assertIn(str(target.resolve()), entries)
+            self.assertEqual(entries[str(target.resolve())], str(af.resolve()))
+
+    def test_no_allowfile_returns_empty(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "data.csv"
+            target.write_text("x")
+            self.assertEqual(collect_allowfile_entries(str(target)), {})
+
+    def test_comments_and_blanks_ignored(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "data.csv"
+            target.write_text("x")
+            self._write_allowfile(d, ["# comment", "", "data.csv"])
+            entries = collect_allowfile_entries(str(target))
+            self.assertEqual(len(entries), 1)
+
+    def test_absolute_entry_kept(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "data.csv"
+            target.write_text("x")
+            self._write_allowfile(d, [str(target)])
+            entries = collect_allowfile_entries(str(target))
+            self.assertIn(str(target.resolve()), entries)
+
+    def test_nearest_declaration_wins_attribution(self):
+        """Duplicate declarations in nested allowfiles attribute to the
+        NEAREST allowfile (setdefault semantics), never the farther one."""
+        with tempfile.TemporaryDirectory() as d:
+            sub = Path(d) / "inner"
+            sub.mkdir()
+            target = sub / "data.csv"
+            target.write_text("x")
+            near = self._write_allowfile(sub, ["data.csv"])
+            self._write_allowfile(d, ["inner/data.csv"])  # same resolved entry, farther
+            entries = collect_allowfile_entries(str(target))
+            self.assertEqual(entries[str(target.resolve())], str(near.resolve()))
+
+    def test_depth_cap(self):
+        """An allowfile beyond ALLOWFILE_MAX_DEPTH ancestors is not consulted."""
+        with tempfile.TemporaryDirectory() as d:
+            deep = Path(d)
+            for i in range(13):
+                deep = deep / f"d{i}"
+            deep.mkdir(parents=True)
+            target = deep / "data.csv"
+            target.write_text("x")
+            self._write_allowfile(d, [str(target)])  # 13 levels above the target
+            entries = collect_allowfile_entries(str(target))
+            self.assertEqual(entries, {})
+
+    def test_symlinked_target_resolves_before_walk(self):
+        """The walk runs over the REAL path's ancestors, so an allowfile next
+        to the real file covers reads through a symlink elsewhere."""
+        with tempfile.TemporaryDirectory() as real_d, tempfile.TemporaryDirectory() as link_d:
+            target = Path(real_d) / "data.csv"
+            target.write_text("x")
+            self._write_allowfile(real_d, ["data.csv"])
+            link = Path(link_d) / "link.csv"
+            link.symlink_to(target)
+            entries = collect_allowfile_entries(str(link))
+            self.assertIn(str(target.resolve()), entries)
 
 
 # ---------------------------------------------------------------------------

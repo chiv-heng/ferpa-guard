@@ -36,6 +36,7 @@ from shared.pii_engine import (
     decide_action,
     worst_action,
     SCANNABLE_EXTENSIONS,
+    collect_allowfile_entries,
 )
 
 
@@ -479,6 +480,20 @@ def main():
                     break
         if matched_entry is not None:
             _write_audit_entry(fp, resolved, allowlist_sources[matched_entry])
+            continue
+
+        # Ancestor-walk allowfile (.pii-guardian-allow): the no-restart escape
+        # hatch. Read fresh each invocation; nearest declaration wins attribution.
+        allowfile_entries = collect_allowfile_entries(resolved)
+        allowfile_match = None
+        for a in allowfile_entries:
+            if resolved == a or resolved.startswith(a.rstrip("/") + "/"):
+                allowfile_match = a
+                break
+        if allowfile_match is not None:
+            _write_audit_entry(
+                fp, resolved, f"allowfile({allowfile_entries[allowfile_match]})"
+            )
             continue
 
         if not should_scan(fp):

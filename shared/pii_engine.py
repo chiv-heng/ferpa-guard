@@ -55,6 +55,15 @@ SKIP_DIRS = {
 # remediation. Exact-name match only -- never substring or glob.
 SKIP_FILENAMES = {"claude.md", "readme.md", "agent.md", "agents.md"}
 
+# Directory-walking allowfile: a dotfile dropped in a data directory (or any
+# ancestor, up to the depth cap) declares allowed entries. Read fresh on every
+# call, so allowing a file takes effect on the very next tool invocation --
+# no settings edit, no session restart. This is the escape hatch environment
+# variables can never be: the hook inherits Claude Code's environment, which
+# a running session cannot change.
+ALLOWFILE_NAME = ".pii-guardian-allow"
+ALLOWFILE_MAX_DEPTH = 12
+
 # ---------------------------------------------------------------------------
 # PII Pattern Registry
 # ---------------------------------------------------------------------------
@@ -391,6 +400,47 @@ def read_file_content(filepath: str) -> ScanInput:
 # ---------------------------------------------------------------------------
 # Scanning
 # ---------------------------------------------------------------------------
+
+def collect_allowfile_entries(filepath: str) -> dict:
+    """Collect allowed entries from `.pii-guardian-allow` files in the target's
+    ancestor directories.
+
+    Returns {resolved_entry_path: declaring_allowfile_path}. Attribution is
+    nearest-first-wins: when nested allowfiles declare the same resolved entry,
+    the entry maps to the allowfile closest to the target (setdefault), so
+    audit provenance always names the nearest declaration.
+
+    Entries are one per line; blank lines and `#` comments are ignored.
+    Absolute entries are kept as written; relative entries resolve against the
+    declaring allowfile's own directory. The target is resolved first, so the
+    walk runs over the real file's ancestors even when read through a symlink.
+    """
+    entries: dict = {}
+    try:
+        target = Path(filepath).resolve()
+    except OSError:
+        return entries
+
+    for parent in list(target.parents)[:ALLOWFILE_MAX_DEPTH]:
+        allowfile = parent / ALLOWFILE_NAME
+        try:
+            if not allowfile.is_file():
+                continue
+            for line in allowfile.read_text(errors="replace").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                candidate = Path(line) if os.path.isabs(line) else (parent / line)
+                try:
+                    resolved_entry = str(candidate.resolve())
+                except OSError:
+                    resolved_entry = str(candidate)
+                entries.setdefault(resolved_entry, str(allowfile))
+        except OSError:
+            continue
+
+    return entries
+
 
 def should_scan(filepath: str) -> bool:
     """Decide whether a file path is worth scanning."""
