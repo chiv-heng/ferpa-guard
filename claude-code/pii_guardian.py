@@ -3,7 +3,7 @@
 pii_guardian.py -- PreToolUse hook that scans files for PII before Claude
 processes them.
 
-Designed for K-12 / FERPA contexts. Fires on Read, Bash, and Edit tool calls,
+Designed for K-12 / FERPA contexts. Fires on Read and Bash tool calls,
 inspects the target file(s), and blocks if PII patterns are detected.
 
 Input: JSON on stdin (Claude Code hooks API)
@@ -242,11 +242,6 @@ def extract_file_paths(tool_name: str, tool_input: dict) -> list[str]:
         bare_data_files = re.findall(rf"(?:^|(?<!>)\s)([^\s\"'|;><]+\.(?:{data_exts}))(?:\s|$|[|;>])", cmd)
         paths.extend(bare_data_files)
 
-    elif tool_name == "Edit":
-        fp = tool_input.get("file_path", "")
-        if fp:
-            paths.append(fp)
-
     # Deduplicate while preserving order
     seen = set()
     unique_paths = []
@@ -401,7 +396,11 @@ def main():
     tool_name = hook_input.get("tool_name", "")
     tool_input = hook_input.get("tool_input", {})
 
-    if tool_name not in ("Read", "Bash", "Edit"):
+    # Guard the tools that pull file CONTENT into the model's context. Read
+    # does; Bash does (cat, grep, head). Edit does not: it pushes content the
+    # model already holds, and gating it blocked editing out an offending
+    # token -- the guard blocked its own remediation (live parity, spec Q6).
+    if tool_name not in ("Read", "Bash"):
         output_allow()
 
     # Load disk cache if enabled

@@ -574,13 +574,17 @@ class TestHookProtocol(unittest.TestCase):
         finally:
             os.unlink(path)
 
-    def test_edit_tool_detection(self):
+    def test_edit_tool_not_gated(self):
+        """Edit is allow-by-design (live parity): it pushes content the model
+        already holds, and blocking Edit prevented editing out the offending
+        token -- the guard blocked its own remediation."""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
             f.write("ssn: 123-45-6789\n")
             path = f.name
         try:
             result = self._run_hook("Edit", {"file_path": path})
-            self.assertEqual(result.returncode, 2)
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stdout.strip(), "")
         finally:
             os.unlink(path)
 
@@ -606,9 +610,10 @@ class TestPathExtraction(unittest.TestCase):
         paths = pg_hook.extract_file_paths("Read", {"file_path": "/data/students.csv"})
         self.assertEqual(paths, ["/data/students.csv"])
 
-    def test_edit_tool(self):
+    def test_edit_tool_extracts_nothing(self):
+        """Edit is outside the gate; extraction returns no paths for it."""
         paths = pg_hook.extract_file_paths("Edit", {"file_path": "/data/roster.csv"})
-        self.assertEqual(paths, ["/data/roster.csv"])
+        self.assertEqual(paths, [])
 
     def test_bash_cat(self):
         paths = pg_hook.extract_file_paths("Bash", {"command": "cat /data/students.csv"})

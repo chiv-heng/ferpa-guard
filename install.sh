@@ -91,8 +91,9 @@ import sys, json, os
 
 settings_path = sys.argv[1]
 hook_command = "python3 \"$HOME/.claude/skills/ferpa-guard/scripts/pii_guardian.py\""
+hook_matcher = "Read|Bash"
 hook_entry = {
-    "matcher": "Read|Bash|Edit",
+    "matcher": hook_matcher,
     "hooks": [{"type": "command", "command": hook_command}]
 }
 
@@ -106,12 +107,22 @@ if os.path.exists(settings_path):
         sys.exit(1)
 
 settings.setdefault("hooks", {}).setdefault("PreToolUse", [])
-existing = [h.get("hooks", [{}])[0].get("command") for h in settings["hooks"]["PreToolUse"]]
-if hook_command not in existing:
+ours = [
+    h for h in settings["hooks"]["PreToolUse"]
+    if any(hk.get("command") == hook_command for hk in h.get("hooks", []))
+]
+if not ours:
     settings["hooks"]["PreToolUse"].append(hook_entry)
     with open(settings_path, "w") as f:
         json.dump(settings, f, indent=2)
     print(f"  [ok] Hook registered in {settings_path}")
+elif any(h.get("matcher") != hook_matcher for h in ours):
+    # Reconcile a stale matcher from an earlier install (e.g. Read|Bash|Edit)
+    for h in ours:
+        h["matcher"] = hook_matcher
+    with open(settings_path, "w") as f:
+        json.dump(settings, f, indent=2)
+    print(f"  [ok] Hook matcher updated to {hook_matcher} in {settings_path}")
 else:
     print("  [ok] Hook already registered (idempotent)")
 PYEOF

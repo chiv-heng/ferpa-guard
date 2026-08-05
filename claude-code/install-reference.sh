@@ -63,7 +63,7 @@ if [ ! -f "$SETTINGS" ]; then
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Read|Bash|Edit",
+        "matcher": "Read|Bash",
         "hooks": [
           {
             "type": "command",
@@ -87,7 +87,7 @@ else
         echo ""
         echo '    "PreToolUse": ['
         echo '      {'
-        echo '        "matcher": "Read|Bash|Edit",'
+        echo '        "matcher": "Read|Bash",'
         echo '        "hooks": ['
         echo '          {'
         echo '            "type": "command",'

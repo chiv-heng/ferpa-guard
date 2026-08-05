@@ -240,6 +240,62 @@ class TestInstallScript(unittest.TestCase):
         )
         return result, fake_home
 
+    def test_fresh_install_registers_read_bash_matcher(self):
+        """A fresh install registers the Read|Bash matcher (no Edit)."""
+        result, fake_home = self._run_install()
+        try:
+            self.assertEqual(result.returncode, 0, f"install.sh failed:\n{result.stderr}")
+            settings = json.loads(
+                (Path(fake_home) / ".claude" / "settings.json").read_text()
+            )
+            matchers = [
+                h.get("matcher") for h in settings["hooks"]["PreToolUse"]
+                if any("ferpa-guard" in hk.get("command", "") for hk in h.get("hooks", []))
+            ]
+            self.assertEqual(matchers, ["Read|Bash"])
+        finally:
+            shutil.rmtree(fake_home)
+
+    def test_reinstall_reconciles_stale_matcher(self):
+        """Reinstalling over a settings.json whose ferpa-guard entry carries a
+        stale matcher (Read|Bash|Edit) updates the matcher in place -- no
+        duplicate hook entry, no stale Edit gate left behind."""
+        fake_home = tempfile.mkdtemp()
+        try:
+            claude_dir = Path(fake_home) / ".claude"
+            claude_dir.mkdir(parents=True)
+            hook_command = 'python3 "$HOME/.claude/skills/ferpa-guard/scripts/pii_guardian.py"'
+            stale = {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "Read|Bash|Edit",
+                            "hooks": [{"type": "command", "command": hook_command}],
+                        }
+                    ]
+                }
+            }
+            (claude_dir / "settings.json").write_text(json.dumps(stale, indent=2))
+
+            env = os.environ.copy()
+            env["HOME"] = fake_home
+            result = subprocess.run(
+                ["bash", str(_project_root / "install.sh")],
+                env=env, capture_output=True, text=True,
+                cwd=str(_project_root), timeout=60,
+            )
+            self.assertEqual(result.returncode, 0, f"install.sh failed:\n{result.stderr}")
+
+            settings = json.loads((claude_dir / "settings.json").read_text())
+            entries = [
+                h for h in settings["hooks"]["PreToolUse"]
+                if any("ferpa-guard" in hk.get("command", "") for hk in h.get("hooks", []))
+            ]
+            self.assertEqual(len(entries), 1, "duplicate hook entry created")
+            self.assertEqual(entries[0]["matcher"], "Read|Bash")
+        finally:
+            shutil.rmtree(fake_home)
+
     def test_fresh_install_file_placement(self):
         """install.sh copies hook script, shared engine, and shared __init__.py."""
         result, fake_home = self._run_install()
