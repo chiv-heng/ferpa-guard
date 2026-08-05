@@ -6,6 +6,7 @@
 .bg-shell/
 .planning/
 pii_guardian.egg-info/
+ferpa_guard.egg-info/
 
 # ── GSD baseline ──
 .gsd
