@@ -11,5 +11,8 @@ pdf  = ["pymupdf>=1.20"]
 docx = ["python-docx>=0.8"]
 all  = ["ferpa-guard[mcp,xlsx,pdf,docx]"]
 
+# RELEASE BLOCKER: do not publish this layout to any package index —
+# top-level "shared" collides in site-packages. Rename to ferpa_guard first.
+# (Consensus decision Q4, .planning/phases/09-fork-merge/SPEC.md)
 [tool.setuptools]
-packages = []
+packages = ["shared"]
