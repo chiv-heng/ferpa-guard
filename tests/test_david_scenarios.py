@@ -99,7 +99,7 @@ class TestD01_CacheAndEarlyExit(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestD02_PatternLevelSkip(unittest.TestCase):
-    """David's AFRI files have 9-digit district IDs that trigger SSN detector.
+    """David's Example District files have 9-digit district IDs that trigger SSN detector.
     Pattern-level skip suppresses SSN while keeping other scanning."""
 
     def test_skip_ssn_keeps_dob_and_email(self):
@@ -407,7 +407,7 @@ class TestX03_MixedAllowlist(unittest.TestCase):
     """Allowlist file with full-bypass entries, SKIP entries, and comments."""
 
     def test_full_bypass_and_skip_coexist(self):
-        """X-03: Full bypass for test fixtures, SKIP for AFRI data."""
+        """X-03: Full bypass for test fixtures, SKIP for Example District data."""
         with tempfile.TemporaryDirectory() as data_dir:
             # Test fixture (full bypass target)
             fixtures_dir = Path(data_dir) / "test-fixtures"
@@ -415,11 +415,11 @@ class TestX03_MixedAllowlist(unittest.TestCase):
             fixture_path = fixtures_dir / "sample-roster.csv"
             fixture_path.write_text("name,ssn\nJane,123-45-6789\n")
 
-            # AFRI data (SKIP target)
-            afri_dir = Path(data_dir) / "afri"
-            afri_dir.mkdir()
-            afri_path = afri_dir / "roster.csv"
-            afri_path.write_text("district_id,name,grade\n100234567,Maria,7\n")
+            # Example District data (SKIP target)
+            example_dir = Path(data_dir) / "example-district"
+            example_dir.mkdir()
+            example_path = example_dir / "roster.csv"
+            example_path.write_text("district_id,name,grade\n100234567,Maria,7\n")
 
             # Unrelated file (full scan)
             other_path = Path(data_dir) / "other.csv"
@@ -433,8 +433,8 @@ class TestX03_MixedAllowlist(unittest.TestCase):
                     f"# Full bypass for test fixtures\n"
                     f"{fixtures_dir}/\n"
                     f"\n"
-                    f"# Pattern skip for AFRI district IDs\n"
-                    f"{afri_dir}/ SKIP:SSN,SSN_NO_DASHES\n"
+                    f"# Pattern skip for Example District IDs\n"
+                    f"{example_dir}/ SKIP:SSN,SSN_NO_DASHES\n"
                 )
 
                 # Test fixture: full bypass -> exit 0
@@ -444,12 +444,12 @@ class TestX03_MixedAllowlist(unittest.TestCase):
                 )
                 self.assertEqual(r1.returncode, 0, "Test fixture should be fully bypassed")
 
-                # AFRI data: SSN skipped, no other PII -> exit 0
+                # Example District data: SSN skipped, no other PII -> exit 0
                 r2 = _run_hook(
-                    "Read", {"file_path": str(afri_path)},
+                    "Read", {"file_path": str(example_path)},
                     env_extra={"HOME": tmpdir},
                 )
-                self.assertEqual(r2.returncode, 0, "AFRI with SSN skipped and no other PII should allow")
+                self.assertEqual(r2.returncode, 0, "Example District with SSN skipped and no other PII should allow")
 
                 # Unrelated file: full scan -> SSN blocks
                 r3 = _run_hook(

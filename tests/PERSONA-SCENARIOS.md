@@ -19,9 +19,9 @@ David manages a 300+ student caseload. He uses Claude Code to build reports, ana
 
 ```
 User: "Read the routing tracker and tell me which students are missing transcripts."
-  -> Claude: Read /data/afri-routing-tracker-2026.xlsx
+  -> Claude: Read /data/example-bus-roster-2026.xlsx
   -> [FERPA Guard scans, blocks. David allowlists the file.]
-  -> Claude: Read /data/afri-routing-tracker-2026.xlsx (second time)
+  -> Claude: Read /data/example-bus-roster-2026.xlsx (second time)
 ```
 
 **Pass criteria:**
@@ -37,17 +37,17 @@ User: "Read the routing tracker and tell me which students are missing transcrip
 **Surface:** Claude Code
 **Tests:** FIX-03 (pattern-level allowlist)
 
-**Workflow:** David's AFRI student files contain 9-digit district IDs that trigger the SSN detector. He needs to suppress SSN detection for these files while keeping all other PII scanning active.
+**Workflow:** David's Example District student files contain 9-digit district IDs that trigger the SSN detector. He needs to suppress SSN detection for these files while keeping all other PII scanning active.
 
 ```
 # ~/.claude/ferpa-guard-allow.txt
-/Users/david/afri-data/ SKIP:SSN,SSN_NO_DASHES
+/Users/david/example-district-data/ SKIP:SSN,SSN_NO_DASHES
 ```
 
 Then:
 ```
 User: "Read the enrollment roster and check attendance rates."
-  -> Claude: Read /Users/david/afri-data/enrollment-2026.csv
+  -> Claude: Read /Users/david/example-district-data/enrollment-2026.csv
 ```
 
 **Sample data (enrollment-2026.csv):**
@@ -398,8 +398,8 @@ User: "Read the test fixture."
 # Full bypass for test fixtures (synthetic data)
 /data/test-fixtures/
 
-# Pattern-level skip for AFRI district IDs
-/data/afri/ SKIP:SSN,SSN_NO_DASHES
+# Pattern-level skip for Example District IDs
+/data/example-district/ SKIP:SSN,SSN_NO_DASHES
 
 # Pattern-level skip for medical info in health class materials
 /data/health-curriculum/ SKIP:MEDICAL_INFO
@@ -407,7 +407,7 @@ User: "Read the test fixture."
 
 **Pass criteria:**
 - `/data/test-fixtures/anything.csv` is fully bypassed (no scan at all)
-- `/data/afri/roster.csv` is scanned but SSN/SSN_NO_DASHES patterns are suppressed
+- `/data/example-district/roster.csv` is scanned but SSN/SSN_NO_DASHES patterns are suppressed
 - `/data/health-curriculum/lesson-plan.txt` is scanned but MEDICAL_INFO is suppressed
 - A file in `/data/other/students.csv` gets full scanning with all patterns
 - Audit log records bypasses for test-fixtures with source=file(...)
