@@ -551,6 +551,7 @@ def scan_content(content: str, header_line_indices: set = None,
                 "count": len(matches),
                 "confidence": "high",
                 "header_only": header_only,
+                "is_metadata": name in METADATA_PATTERNS,
             })
 
             # Early exit: skip remaining patterns once a CRITICAL match is found
@@ -631,7 +632,28 @@ def _calculate_confidence(findings: list[dict], total_lines: int = 0) -> None:
             f["confidence"] = "low"
 
 
-def decide_action(severity: str, confidence: str) -> str:
+# Topic/field-name patterns: their regexes match words ABOUT student data
+# (column names, policy vocabulary), not data values. A file containing only
+# these is documentation, not disclosure. Unknown patterns default to VALUE,
+# so a newly added pattern fails closed (blocking) rather than open.
+METADATA_PATTERNS = {
+    "IEP_504_FLAG",
+    "DISCIPLINE_RECORD",
+    "MEDICAL_INFO",
+    "PARENT_GUARDIAN",
+}
+
+
+def _is_metadata(pattern_name: str) -> bool:
+    return pattern_name in METADATA_PATTERNS
+
+
+def decide_action(
+    severity: str,
+    confidence: str,
+    is_metadata: bool = False,
+    has_value_finding: bool = False,
+) -> str:
     """Map severity x confidence to an action: block, warn, or log.
 
     | Severity    | HIGH conf | MEDIUM conf | LOW conf |
@@ -639,6 +661,10 @@ def decide_action(severity: str, confidence: str) -> str:
     | critical    | block     | block       | warn     |
     | high        | block     | warn        | log      |
     | medium      | warn      | log         | log      |
+
+    A metadata finding (topic word or field name) is downgraded from block to
+    warn unless the file also contains a real VALUE match. Naming a column is
+    not disclosing a record.
     """
     matrix = {
         ("critical", "high"): "block",
@@ -651,7 +677,12 @@ def decide_action(severity: str, confidence: str) -> str:
         ("medium", "medium"): "log",
         ("medium", "low"): "log",
     }
-    return matrix.get((severity, confidence), "block")
+    action = matrix.get((severity, confidence), "block")
+
+    if is_metadata and not has_value_finding and action == "block":
+        action = "warn"
+
+    return action
 
 
 _ACTION_ORDER = {"block": 0, "warn": 1, "log": 2}
@@ -659,9 +690,17 @@ _ACTION_ORDER = {"block": 0, "warn": 1, "log": 2}
 
 def worst_action(findings: list[dict]) -> str:
     """Return the most severe action across all findings in a file."""
+    # Does this file contain any actual PII VALUE, as opposed to words about PII?
+    has_value_finding = any(not _is_metadata(f["pattern_name"]) for f in findings)
+
     worst = "log"
     for f in findings:
-        action = decide_action(f["severity"], f["confidence"])
+        action = decide_action(
+            f["severity"],
+            f["confidence"],
+            is_metadata=_is_metadata(f["pattern_name"]),
+            has_value_finding=has_value_finding,
+        )
         if _ACTION_ORDER[action] < _ACTION_ORDER[worst]:
             worst = action
     return worst

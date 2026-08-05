@@ -40,6 +40,8 @@ from shared.pii_engine import (
     decide_action,
     collect_allowfile_entries,
     ALLOWFILE_NAME,
+    METADATA_PATTERNS,
+    worst_action,
 )
 
 # Hook functions (used by path extraction tests)
@@ -758,6 +760,228 @@ class TestShouldScan(unittest.TestCase):
     def test_readme_txt_not_exempt(self):
         """The exemption is the exact basename, not the stem."""
         self.assertTrue(should_scan("/data/readme.txt"))
+
+
+# ---------------------------------------------------------------------------
+# Layer 5c: Metadata-vs-value split
+# ---------------------------------------------------------------------------
+
+_FLOOD_TEXT = """Student services workstream notes. School compliance review.
+IEP caseload and 504 plan coverage. Accommodation plan backlog.
+Discipline record review: suspension and expulsion counts.
+Medical: allergy and seizure action plans, inhaler storage.
+Columns on the parent table: parent_email, guardian_phone, emergency_contact.
+IEP meeting cadence. 504 plan renewals. Discipline referral totals.
+Medication administration log columns. Guardian consent tracking.
+Parent contact policy. IEP goals template. Medical action plan review.
+"""
+
+
+class TestMetadataValueSplit(unittest.TestCase):
+    """Metadata findings (topic words, field names) cap at warn unless the
+    file also holds a real VALUE match. Naming a column is not disclosing a
+    record -- and a blocked doc cannot be edited to fix itself."""
+
+    def test_metadata_constant_contents(self):
+        self.assertEqual(
+            METADATA_PATTERNS,
+            {"IEP_504_FLAG", "DISCIPLINE_RECORD", "MEDICAL_INFO", "PARENT_GUARDIAN"},
+        )
+
+    def test_metadata_only_flood_caps_at_warn(self):
+        findings = scan_content(_FLOOD_TEXT)
+        names = {f["pattern_name"] for f in findings}
+        self.assertTrue(names <= METADATA_PATTERNS, f"unexpected value findings: {names}")
+        self.assertGreaterEqual(len(names), 3)
+        self.assertEqual(worst_action(findings), "warn")
+
+    def test_metadata_plus_email_escalates_to_block(self):
+        findings = scan_content(_FLOOD_TEXT + "\ncontact: caregiver@example.com\n")
+        self.assertEqual(worst_action(findings), "block")
+
+    def test_ssn_alone_uncapped(self):
+        findings = scan_content("SSN: 123-45-6789")
+        self.assertEqual(worst_action(findings), "block")
+
+    def test_decide_action_cap_and_backward_compat(self):
+        # Cap applies only when metadata and no value finding in the file
+        self.assertEqual(decide_action("high", "high", is_metadata=True, has_value_finding=False), "warn")
+        self.assertEqual(decide_action("high", "high", is_metadata=True, has_value_finding=True), "block")
+        self.assertEqual(decide_action("high", "high", is_metadata=False, has_value_finding=False), "block")
+        # Existing two-arg callers (MCP server, __init__) are unaffected
+        self.assertEqual(decide_action("high", "high"), "block")
+
+    def test_unknown_pattern_fails_closed_as_value(self):
+        """A pattern name outside METADATA_PATTERNS is a VALUE pattern, so a
+        newly added pattern blocks rather than silently capping."""
+        findings = [
+            {"pattern_name": "IEP_504_FLAG", "severity": "high", "confidence": "high"},
+            {"pattern_name": "FUTURE_PATTERN", "severity": "high", "confidence": "high"},
+        ]
+        self.assertEqual(worst_action(findings), "block")
+
+    def test_stale_cached_findings_without_is_metadata_field(self):
+        """Findings cached before this change lack is_metadata; worst_action
+        folds them by pattern-name membership, not the field."""
+        findings = [
+            {"pattern_name": "MEDICAL_INFO", "severity": "high", "confidence": "high"},
+        ]
+        self.assertEqual(worst_action(findings), "warn")
+
+    def test_findings_carry_is_metadata_field(self):
+        findings = scan_content(_FLOOD_TEXT)
+        for f in findings:
+            self.assertIn("is_metadata", f)
+            self.assertTrue(f["is_metadata"])
+
+    def test_differential_cap_without_scorer_change(self):
+        """One run: metadata fixtures reach warn AND the three detection wins
+        are untouched -- the cap landed without touching the fork scorer."""
+        # metadata-only -> warn (the two governance fixtures)
+        self.assertEqual(worst_action(scan_content(_FLOOD_TEXT)), "warn")
+        # ISO DOB detection win -> block-tier finding survives
+        dob = scan_content("student dob: 2010-03-15\n" * 6)
+        self.assertIn("DOB", {f["pattern_name"] for f in dob})
+        self.assertEqual(worst_action(dob), "block")
+        # caps-address detection win -> warn survives
+        addr_rows = "\n".join(f"{100 + i} MAPLE STREET" for i in range(6))
+        addr = scan_content("address\n" + addr_rows + "\n" + "filler\n" * 6)
+        self.assertIn("HOME_ADDRESS", {f["pattern_name"] for f in addr})
+        self.assertEqual(worst_action(addr), "warn")
+        # small-file boost detection win -> single DOB in tiny file warns, not logs
+        small = scan_content("name,dob\nJane,03/15/2010\n")
+        self.assertEqual(worst_action(small), "warn")
+
+
+# ---------------------------------------------------------------------------
+# Layer 5d: Metadata split at the hook boundary + cache v2 format
+# ---------------------------------------------------------------------------
+
+class TestMetadataSplitHook(unittest.TestCase):
+    """Hook-level replicas of the two metadata governance fixtures."""
+
+    SCRIPT = str(_claude_code_dir / "pii_guardian.py") if _claude_code_dir.is_dir() else str(Path(__file__).parent / "pii_guardian.py")
+
+    def _run_hook(self, tool_name, tool_input, env_extra=None):
+        payload = json.dumps({"tool_name": tool_name, "tool_input": tool_input})
+        env = os.environ.copy()
+        if env_extra:
+            env.update(env_extra)
+        return subprocess.run(
+            [sys.executable, self.SCRIPT], input=payload,
+            capture_output=True, text=True, env=env,
+        )
+
+    def test_metadata_flood_warns_not_blocks(self):
+        with tempfile.TemporaryDirectory() as home:
+            path = os.path.join(home, "flood.txt")
+            with open(path, "w") as f:
+                f.write(_FLOOD_TEXT)
+            result = self._run_hook("Read", {"file_path": path}, env_extra={"HOME": home})
+            self.assertEqual(result.returncode, 0)
+            self.assertIn("Possible sensitive data", result.stderr)
+
+    def test_metadata_spaced_csv_warns_not_blocks(self):
+        content = (
+            "student number,iep status,section 504,suspension count,medication notes,allergy list\n"
+            "5000000,Y,N,N,N,Y\n5000001,N,N,Y,Y,N\n5000002,N,Y,N,N,Y\n"
+            "5000003,Y,N,N,Y,N\n5000004,N,N,Y,N,N\n"
+        )
+        with tempfile.TemporaryDirectory() as home:
+            path = os.path.join(home, "spaced.csv")
+            with open(path, "w") as f:
+                f.write(content)
+            result = self._run_hook("Read", {"file_path": path}, env_extra={"HOME": home})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Possible sensitive data", result.stderr)
+
+    def test_metadata_plus_value_still_blocks(self):
+        with tempfile.TemporaryDirectory() as home:
+            path = os.path.join(home, "flood_email.txt")
+            with open(path, "w") as f:
+                f.write(_FLOOD_TEXT + "\ncontact: caregiver@example.com\n")
+            result = self._run_hook("Read", {"file_path": path}, env_extra={"HOME": home})
+            self.assertEqual(result.returncode, 2)
+
+    def test_strict_mode_blocks_metadata_only(self):
+        """FERPA_GUARD_STRICT restores pre-confidence behavior: metadata blocks."""
+        with tempfile.TemporaryDirectory() as home:
+            path = os.path.join(home, "flood.txt")
+            with open(path, "w") as f:
+                f.write(_FLOOD_TEXT)
+            result = self._run_hook(
+                "Read", {"file_path": path},
+                env_extra={"HOME": home, "FERPA_GUARD_STRICT": "1"},
+            )
+            self.assertEqual(result.returncode, 2)
+
+
+class TestDiskCacheV2(unittest.TestCase):
+    """Disk cache wire format v2: {"version": 2, "entries": [...]}."""
+
+    SCRIPT = str(_claude_code_dir / "pii_guardian.py") if _claude_code_dir.is_dir() else str(Path(__file__).parent / "pii_guardian.py")
+
+    def _run_hook(self, tool_name, tool_input, env_extra=None):
+        payload = json.dumps({"tool_name": tool_name, "tool_input": tool_input})
+        env = os.environ.copy()
+        if env_extra:
+            env.update(env_extra)
+        return subprocess.run(
+            [sys.executable, self.SCRIPT], input=payload,
+            capture_output=True, text=True, env=env,
+        )
+
+    def _cache_path(self, home):
+        return Path(home) / ".claude" / "ferpa-guard-cache.json"
+
+    def test_writer_emits_v2(self):
+        with tempfile.TemporaryDirectory() as home:
+            Path(home, ".claude").mkdir()
+            path = os.path.join(home, "emails.csv")
+            with open(path, "w") as f:
+                f.write("email\n" + "\n".join(f"u{i}@example.com" for i in range(6)) + "\n")
+            result = self._run_hook(
+                "Read", {"file_path": path},
+                env_extra={"HOME": home, "FERPA_GUARD_CACHE": "1"},
+            )
+            self.assertEqual(result.returncode, 0)
+            data = json.loads(self._cache_path(home).read_text())
+            self.assertIsInstance(data, dict)
+            self.assertEqual(data["version"], 2)
+            self.assertIsInstance(data["entries"], list)
+            self.assertGreaterEqual(len(data["entries"]), 1)
+
+    def test_legacy_v1_list_ignored_cold(self):
+        """A pre-split top-level list is ignored wholesale -- treated as cold
+        cache, never migrated -- and the run still succeeds."""
+        with tempfile.TemporaryDirectory() as home:
+            Path(home, ".claude").mkdir()
+            path = os.path.join(home, "roster.csv")
+            with open(path, "w") as f:
+                f.write("name,ssn\nJane,123-45-6789\n")
+            stat = os.stat(path)
+            legacy = [{"key": [str(Path(path).resolve()), stat.st_mtime, stat.st_size],
+                       "findings": [], "cached_at": 9999999999}]
+            self._cache_path(home).write_text(json.dumps(legacy))
+            result = self._run_hook(
+                "Read", {"file_path": path},
+                env_extra={"HOME": home, "FERPA_GUARD_CACHE": "1"},
+            )
+            # Legacy empty-findings entry must NOT be trusted: the file blocks.
+            self.assertEqual(result.returncode, 2)
+
+    def test_malformed_cache_ignored(self):
+        with tempfile.TemporaryDirectory() as home:
+            Path(home, ".claude").mkdir()
+            self._cache_path(home).write_text("{not json")
+            path = os.path.join(home, "clean.csv")
+            with open(path, "w") as f:
+                f.write("color,count\nred,5\n")
+            result = self._run_hook(
+                "Read", {"file_path": path},
+                env_extra={"HOME": home, "FERPA_GUARD_CACHE": "1"},
+            )
+            self.assertEqual(result.returncode, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -2277,7 +2501,9 @@ class TestScanCacheDisk(unittest.TestCase):
 
                 self.assertTrue(cache_path.exists(), "Disk cache file should be created")
                 data = json.loads(cache_path.read_text())
-                self.assertIsInstance(data, list)
+                self.assertIsInstance(data, dict)
+                self.assertEqual(data["version"], 2)
+                self.assertIsInstance(data["entries"], list)
             finally:
                 os.unlink(data_path)
 

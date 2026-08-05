@@ -54,7 +54,10 @@ FEEDBACK_LOG_PATH = Path.home() / ".claude" / "ferpa-guard-feedback.log"
 # return the cached findings + action instead of re-scanning.
 # Cache TTL: 1 hour max. Disk persistence optional via FERPA_GUARD_CACHE=1.
 
-_CACHE_TTL = 3600  # 1 hour in seconds
+_CACHE_TTL = 3600
+# Disk-cache wire format version. Bumped to 2 with the metadata-vs-value
+# split: v1 findings lack is_metadata and predate the action cap.
+_CACHE_VERSION = 2  # 1 hour in seconds
 _DISK_CACHE_PATH = Path.home() / ".claude" / "ferpa-guard-cache.json"
 
 # In-memory cache: { (path, mtime, size): { "findings": [...], "cached_at": float } }
@@ -94,15 +97,21 @@ def _load_disk_cache() -> None:
         return
     try:
         data = json.loads(_DISK_CACHE_PATH.read_text())
+        # Wire format v2: {"version": 2, "entries": [...]}. Anything else --
+        # the pre-split top-level list, a versionless dict, malformed JSON --
+        # is ignored wholesale (cold cache, never migrated): those findings
+        # predate the metadata-vs-value split and cannot be trusted.
+        if not isinstance(data, dict) or data.get("version") != _CACHE_VERSION:
+            return
         now = time.time()
-        for entry in data:
+        for entry in data.get("entries", []):
             key = tuple(entry["key"])
             if now - entry["cached_at"] <= _CACHE_TTL:
                 _scan_cache[key] = {
                     "findings": entry["findings"],
                     "cached_at": entry["cached_at"],
                 }
-    except (json.JSONDecodeError, KeyError, OSError):
+    except (json.JSONDecodeError, KeyError, TypeError, OSError):
         pass
 
 
@@ -121,7 +130,9 @@ def _save_disk_cache() -> None:
                     "cached_at": val["cached_at"],
                 })
         _DISK_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _DISK_CACHE_PATH.write_text(json.dumps(entries))
+        _DISK_CACHE_PATH.write_text(
+            json.dumps({"version": _CACHE_VERSION, "entries": entries})
+        )
     except OSError:
         pass
 
