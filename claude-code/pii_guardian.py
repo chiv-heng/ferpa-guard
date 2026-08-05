@@ -37,10 +37,14 @@ from shared.pii_engine import (
     worst_action,
     SCANNABLE_EXTENSIONS,
     collect_allowfile_entries,
+    write_audit_event,
 )
 
 
-AUDIT_LOG_PATH = Path.home() / ".claude" / "ferpa-guard-audit.log"
+# JSONL audit trail (block/warn/log/bypass). Deliberately NOT the live MBP
+# monolith's pii-guardian-audit.jsonl -- two writers interleaving in one file
+# during the re-wire transition would corrupt line-count signals.
+AUDIT_LOG_PATH = Path.home() / ".claude" / "logs" / "ferpa-guard-audit.jsonl"
 FEEDBACK_LOG_PATH = Path.home() / ".claude" / "ferpa-guard-feedback.log"
 
 # ---------------------------------------------------------------------------
@@ -123,20 +127,12 @@ def _save_disk_cache() -> None:
 
 
 def _write_audit_entry(original_path: str, resolved_path: str, source: str):
-    """Write an audit log entry for an allowlist bypass (FERPA compliance).
-
-    Logs to both stderr and ~/.claude/ferpa-guard-audit.log.
-    Never raises -- file write failures are caught and logged to stderr.
-    """
-    timestamp = datetime.datetime.now().isoformat(timespec="seconds")
-    entry = f"[{timestamp}] ALLOW original={original_path} resolved={resolved_path} source={source}"
-    print(f"FERPA GUARD AUDIT: {entry}", file=sys.stderr)
-    try:
-        AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(AUDIT_LOG_PATH, "a") as f:
-            f.write(entry + "\n")
-    except OSError as exc:
-        print(f"FERPA GUARD AUDIT: failed to write audit log: {exc}", file=sys.stderr)
+    """Audit an allowlist bypass: JSONL record + stderr echo. Never raises."""
+    print(
+        f"FERPA GUARD AUDIT: bypass resolved={resolved_path} source={source}",
+        file=sys.stderr,
+    )
+    write_audit_event(AUDIT_LOG_PATH, "bypass", resolved_path, [], source=source)
 
 
 # ---------------------------------------------------------------------------
@@ -536,6 +532,9 @@ def main():
         for fp, findings in all_findings.items():
             for f in findings:
                 f["confidence"] = "high"
+            write_audit_event(
+                AUDIT_LOG_PATH, "block", fp, [f["pattern_name"] for f in findings]
+            )
             reasons.append(format_block_reason(fp, findings))
         _save_disk_cache()
         output_deny("\n\n".join(reasons))
@@ -553,6 +552,15 @@ def main():
             warn_files[fp] = findings
         else:
             log_files[fp] = findings
+
+    # Audit every per-file decision BEFORE any deny return -- a mixed
+    # invocation (block + warn files) exits on the block, and the lower-tier
+    # records must already be on disk by then.
+    for action, files in (("block", block_files), ("warn", warn_files), ("log", log_files)):
+        for fp, findings in files.items():
+            write_audit_event(
+                AUDIT_LOG_PATH, action, fp, [f["pattern_name"] for f in findings]
+            )
 
     if block_files:
         reasons = []

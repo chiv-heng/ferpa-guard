@@ -180,39 +180,41 @@ class TestAuditLogIntegration(unittest.TestCase):
     """Verify both Claude Code hook and MCP server write to the same audit log."""
 
     def test_both_surfaces_write_to_same_audit_log(self):
-        """Hook allowlist bypass (ALLOW) and MCP scan (SCAN) both appear in audit log."""
-        audit_log = Path.home() / ".claude" / "ferpa-guard-audit.log"
+        """Hook writes JSONL bypass records to ~/.claude/logs/ferpa-guard-audit.jsonl.
 
-        # Ensure ~/.claude/ directory exists
-        audit_log.parent.mkdir(parents=True, exist_ok=True)
+        Runs against a temporary HOME so the developer's real logs are never
+        touched. The MCP server still writes its legacy plain-text log until
+        the re-wire pass unifies it (fork-merge spec, Port 4); its half of
+        this criterion is asserted only when MCP is importable.
+        """
+        with tempfile.TemporaryDirectory() as home:
+            _run_hook(
+                "Read",
+                {"file_path": FIXTURE_PATH},
+                env_extra={"FERPA_GUARD_ALLOW": FIXTURE_PATH, "HOME": home},
+            )
+            audit_log = Path(home) / ".claude" / "logs" / "ferpa-guard-audit.jsonl"
+            self.assertTrue(audit_log.exists(), "Hook did not create JSONL audit log")
+            records = [
+                json.loads(line)
+                for line in audit_log.read_text().splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["action"], "bypass")
+            self.assertEqual(records[0]["v"], 1)
+            self.assertIn(
+                os.path.basename(FIXTURE_PATH),
+                records[0]["file"],
+                "Fixture path not found in audit record",
+            )
 
-        # Read baseline
-        baseline = audit_log.read_text() if audit_log.exists() else ""
-
-        # Hook bypass writes ALLOW entry (set fixture on allowlist via env var)
-        _run_hook(
-            "Read",
-            {"file_path": FIXTURE_PATH},
-            env_extra={"FERPA_GUARD_ALLOW": FIXTURE_PATH},
-        )
-
-        # MCP scan writes SCAN entry (only if MCP is available)
         if _MCP_AVAILABLE:
+            legacy_log = Path.home() / ".claude" / "ferpa-guard-audit.log"
+            baseline = legacy_log.read_text() if legacy_log.exists() else ""
             mcp_srv.scan_file(FIXTURE_PATH)
-
-        # Verify new entries appeared after baseline
-        new_content = audit_log.read_text()[len(baseline):]
-        self.assertIn("ALLOW", new_content, "Hook allowlist bypass did not write ALLOW entry")
-
-        if _MCP_AVAILABLE:
+            new_content = legacy_log.read_text()[len(baseline):]
             self.assertIn("SCAN", new_content, "MCP scan_file did not write SCAN entry")
-
-        # Both entries reference the fixture file path
-        self.assertIn(
-            os.path.basename(FIXTURE_PATH),
-            new_content,
-            "Fixture path not found in new audit entries",
-        )
 
 
 # ===========================================================================

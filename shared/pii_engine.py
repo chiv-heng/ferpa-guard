@@ -7,6 +7,7 @@ and decision matrix. All surfaces (Claude Code hook, MCP server, redactor)
 import from this module.
 """
 
+import datetime
 import json
 import os
 import re
@@ -400,6 +401,31 @@ def read_file_content(filepath: str) -> ScanInput:
 # ---------------------------------------------------------------------------
 # Scanning
 # ---------------------------------------------------------------------------
+
+def write_audit_event(log_path, action: str, file: str, patterns, source: str = None) -> None:
+    """Append one JSONL audit record. Never raises; never affects the decision.
+
+    Records pattern NAMES only -- matched values and file content must never
+    reach the audit trail. `source` is set on bypass events to attribute the
+    allowlist mechanism that granted it (env / user file / ancestor allowfile).
+    """
+    rec = {
+        "v": 1,
+        "ts": datetime.datetime.now().isoformat(timespec="seconds"),
+        "action": action,
+        "file": file,
+        "patterns": list(patterns),
+    }
+    if source:
+        rec["source"] = source
+    try:
+        log_path = Path(log_path)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a") as fh:
+            fh.write(json.dumps(rec) + "\n")
+    except OSError:
+        pass
+
 
 def collect_allowfile_entries(filepath: str) -> dict:
     """Collect allowed entries from `.pii-guardian-allow` files in the target's

@@ -1669,7 +1669,8 @@ class TestSymlinkResolution(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestAuditLogging(unittest.TestCase):
-    """Test that allowlist bypasses produce audit log entries."""
+    """JSONL audit trail: block, warn, log, and bypass events are recorded to
+    ~/.claude/logs/ferpa-guard-audit.jsonl -- pattern names only, never values."""
 
     SCRIPT = str(_claude_code_dir / "pii_guardian.py") if _claude_code_dir.is_dir() else str(Path(__file__).parent / "pii_guardian.py")
 
@@ -1688,121 +1689,120 @@ class TestAuditLogging(unittest.TestCase):
         )
         return result
 
-    def test_audit_log_written_on_allowlist_bypass(self):
-        """Allowlist bypass writes structured entry to audit log file."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
-            f.write("name,ssn\nJane,123-45-6789\n")
-            data_path = f.name
-        with tempfile.TemporaryDirectory() as tmpdir:
-            try:
-                claude_dir = Path(tmpdir) / ".claude"
-                claude_dir.mkdir()
-                result = self._run_hook(
-                    "Read",
-                    {"file_path": data_path},
-                    env_extra={
-                        "FERPA_GUARD_ALLOW": data_path,
-                        "HOME": tmpdir,
-                    },
-                )
-                self.assertEqual(result.returncode, 0)
-                audit_log = claude_dir / "ferpa-guard-audit.log"
-                self.assertTrue(audit_log.exists(), "Audit log file should be created")
-                content = audit_log.read_text()
-                self.assertIn("ALLOW", content)
-                self.assertIn(data_path, content)
-                self.assertIn("env(FERPA_GUARD_ALLOW)", content)
-                # Check ISO 8601 timestamp format (YYYY-MM-DDTHH:MM:SS)
-                self.assertRegex(content, r"\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\]")
-            finally:
-                os.unlink(data_path)
+    @staticmethod
+    def _audit_records(home):
+        log = Path(home) / ".claude" / "logs" / "ferpa-guard-audit.jsonl"
+        if not log.exists():
+            return []
+        return [json.loads(line) for line in log.read_text().splitlines() if line.strip()]
 
-    def test_audit_log_written_to_stderr(self):
-        """Allowlist bypass prints audit entry to stderr."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
-            f.write("name,ssn\nJane,123-45-6789\n")
-            data_path = f.name
-        with tempfile.TemporaryDirectory() as tmpdir:
-            try:
-                Path(tmpdir, ".claude").mkdir()
-                result = self._run_hook(
-                    "Read",
-                    {"file_path": data_path},
-                    env_extra={
-                        "FERPA_GUARD_ALLOW": data_path,
-                        "HOME": tmpdir,
-                    },
-                )
-                self.assertEqual(result.returncode, 0)
-                self.assertIn("FERPA GUARD AUDIT:", result.stderr)
-                self.assertIn("ALLOW", result.stderr)
-            finally:
-                os.unlink(data_path)
+    def _write(self, home, name, content):
+        path = Path(home) / name
+        path.write_text(content)
+        return str(path)
 
-    def test_audit_log_includes_source_env(self):
-        """Audit entry includes env var source."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
-            f.write("name,ssn\nJane,123-45-6789\n")
-            data_path = f.name
-        with tempfile.TemporaryDirectory() as tmpdir:
-            try:
-                Path(tmpdir, ".claude").mkdir()
-                result = self._run_hook(
-                    "Read",
-                    {"file_path": data_path},
-                    env_extra={
-                        "FERPA_GUARD_ALLOW": data_path,
-                        "HOME": tmpdir,
-                    },
-                )
-                audit_log = Path(tmpdir) / ".claude" / "ferpa-guard-audit.log"
-                content = audit_log.read_text()
-                self.assertIn("source=env(FERPA_GUARD_ALLOW)", content)
-            finally:
-                os.unlink(data_path)
+    def test_bypass_audited_jsonl(self):
+        """Env allowlist bypass writes a v1 JSONL record with source attribution."""
+        with tempfile.TemporaryDirectory() as home:
+            data_path = self._write(home, "students.csv", "name,ssn\nJane,123-45-6789\n")
+            result = self._run_hook(
+                "Read", {"file_path": data_path},
+                env_extra={"FERPA_GUARD_ALLOW": data_path, "HOME": home},
+            )
+            self.assertEqual(result.returncode, 0)
+            records = self._audit_records(home)
+            self.assertEqual(len(records), 1)
+            rec = records[0]
+            self.assertEqual(rec["v"], 1)
+            self.assertEqual(rec["action"], "bypass")
+            self.assertEqual(rec["source"], "env(FERPA_GUARD_ALLOW)")
+            self.assertEqual(rec["patterns"], [])
+            self.assertRegex(rec["ts"], r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
 
-    def test_audit_log_includes_source_file(self):
-        """Audit entry includes file-based allowlist source."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
-            f.write("name,ssn\nJane,123-45-6789\n")
-            data_path = f.name
-        with tempfile.TemporaryDirectory() as tmpdir:
-            try:
-                claude_dir = Path(tmpdir) / ".claude"
-                claude_dir.mkdir()
-                allowlist_path = claude_dir / "ferpa-guard-allow.txt"
-                allowlist_path.write_text(data_path + "\n")
-                result = self._run_hook(
-                    "Read",
-                    {"file_path": data_path},
-                    env_extra={"HOME": tmpdir},
-                )
-                self.assertEqual(result.returncode, 0)
-                audit_log = claude_dir / "ferpa-guard-audit.log"
-                content = audit_log.read_text()
-                self.assertIn("source=file(", content)
-            finally:
-                os.unlink(data_path)
+    def test_bypass_audit_to_stderr(self):
+        """Bypass still echoes an audit line to stderr."""
+        with tempfile.TemporaryDirectory() as home:
+            data_path = self._write(home, "students.csv", "name,ssn\nJane,123-45-6789\n")
+            result = self._run_hook(
+                "Read", {"file_path": data_path},
+                env_extra={"FERPA_GUARD_ALLOW": data_path, "HOME": home},
+            )
+            self.assertEqual(result.returncode, 0)
+            self.assertIn("FERPA GUARD AUDIT:", result.stderr)
 
-    def test_no_audit_log_when_no_bypass(self):
-        """No audit log created when file is blocked (no allowlist bypass)."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
-            f.write("name,ssn\nJane,123-45-6789\n")
-            data_path = f.name
-        with tempfile.TemporaryDirectory() as tmpdir:
-            try:
-                claude_dir = Path(tmpdir) / ".claude"
-                claude_dir.mkdir()
-                result = self._run_hook(
-                    "Read",
-                    {"file_path": data_path},
-                    env_extra={"HOME": tmpdir},
-                )
-                self.assertEqual(result.returncode, 2)
-                audit_log = claude_dir / "ferpa-guard-audit.log"
-                self.assertFalse(audit_log.exists(), "No audit log when file is blocked")
-            finally:
-                os.unlink(data_path)
+    def test_bypass_source_file(self):
+        """File-based allowlist bypass attributes source=file(...)."""
+        with tempfile.TemporaryDirectory() as home:
+            data_path = self._write(home, "students.csv", "name,ssn\nJane,123-45-6789\n")
+            claude_dir = Path(home) / ".claude"
+            claude_dir.mkdir()
+            (claude_dir / "ferpa-guard-allow.txt").write_text(data_path + "\n")
+            result = self._run_hook("Read", {"file_path": data_path}, env_extra={"HOME": home})
+            self.assertEqual(result.returncode, 0)
+            records = self._audit_records(home)
+            self.assertEqual(len(records), 1)
+            self.assertTrue(records[0]["source"].startswith("file("))
+
+    def test_block_audited_with_pattern_names(self):
+        """A blocked file writes action=block with the pattern names that fired."""
+        with tempfile.TemporaryDirectory() as home:
+            data_path = self._write(home, "students.csv", "name,ssn\nJane,123-45-6789\n")
+            result = self._run_hook("Read", {"file_path": data_path}, env_extra={"HOME": home})
+            self.assertEqual(result.returncode, 2)
+            records = self._audit_records(home)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["action"], "block")
+            self.assertIn("SSN", records[0]["patterns"])
+
+    def test_warn_audited(self):
+        """A warn-tier file writes action=warn."""
+        with tempfile.TemporaryDirectory() as home:
+            rows = "\n".join(f"user{i}@example.com" for i in range(6))
+            data_path = self._write(home, "emails.csv", "email\n" + rows + "\n")
+            result = self._run_hook("Read", {"file_path": data_path}, env_extra={"HOME": home})
+            self.assertEqual(result.returncode, 0)
+            records = self._audit_records(home)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["action"], "warn")
+            self.assertIn("EMAIL", records[0]["patterns"])
+
+    def test_log_audited(self):
+        """A log-tier file writes action=log (previously an audit blind spot)."""
+        with tempfile.TemporaryDirectory() as home:
+            filler = "\n".join(f"row {i}, general notes here" for i in range(11))
+            data_path = self._write(home, "notes.csv", filler + "\ncall 401-555-1234\n")
+            result = self._run_hook("Read", {"file_path": data_path}, env_extra={"HOME": home})
+            self.assertEqual(result.returncode, 0)
+            records = self._audit_records(home)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["action"], "log")
+            self.assertIn("PHONE", records[0]["patterns"])
+
+    def test_mixed_invocation_audits_all_files_before_deny(self):
+        """Block + warn files in one Bash call: BOTH records land even though
+        the hook exits 2 on the block -- emission precedes the deny return."""
+        with tempfile.TemporaryDirectory() as home:
+            block_path = self._write(home, "roster.csv", "name,ssn\nJane,123-45-6789\n")
+            rows = "\n".join(f"user{i}@example.com" for i in range(6))
+            warn_path = self._write(home, "emails.csv", "email\n" + rows + "\n")
+            result = self._run_hook(
+                "Bash", {"command": f"cat '{block_path}' '{warn_path}'"},
+                env_extra={"HOME": home},
+            )
+            self.assertEqual(result.returncode, 2)
+            records = self._audit_records(home)
+            actions = sorted(r["action"] for r in records)
+            self.assertEqual(actions, ["block", "warn"])
+
+    def test_audit_contains_no_pii_values(self):
+        """Audit lines carry pattern NAMES only -- never matched values."""
+        with tempfile.TemporaryDirectory() as home:
+            data_path = self._write(home, "students.csv", "name,ssn\nJane,123-45-6789\n")
+            self._run_hook("Read", {"file_path": data_path}, env_extra={"HOME": home})
+            log = Path(home) / ".claude" / "logs" / "ferpa-guard-audit.jsonl"
+            content = log.read_text()
+            self.assertNotIn("123-45-6789", content)
+            self.assertNotIn("Jane", content)
 
 
 # ---------------------------------------------------------------------------
