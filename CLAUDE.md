@@ -51,6 +51,12 @@ Optional (per file type):
 - `pymupdf` for .pdf scanning
 - `python-docx` for .docx scanning
 
+Readers fail closed: if an optional library is missing, a file is corrupt or
+encrypted, or content extends past a scan limit, the file is blocked as
+unscannable rather than silently allowed. "Could not check" is never treated
+as "clean." The block message names the fix in plain language (install the
+library, convert the file, or allowlist a verified-safe path).
+
 ## Setup
 
 ```bash
@@ -89,7 +95,7 @@ for f in tests/test_*.py; do python3 "$f"; done
 python3 tests/test_pii_guardian.py
 ```
 
-Suites: `test_pii_guardian` (pattern detection, file readers, hook protocol, path extraction, should-scan filtering, redactor), `test_integration`, `test_mcp_tools`, and `test_david_scenarios` (persona scenarios; see `tests/PERSONA-SCENARIOS.md`).
+Suites: `test_pii_guardian` (pattern detection, file readers, hook protocol, path extraction, should-scan filtering, redactor), `test_integration`, `test_mcp_tools`, `test_failclosed_readers` (unscannable-file blocking: missing dependencies, corrupt/encrypted files, scan limits, cache non-poisoning, formatter truthfulness, scan-report exit contract), and `test_david_scenarios` (persona scenarios; see `tests/PERSONA-SCENARIOS.md`).
 
 ## Privacy
 
