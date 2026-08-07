@@ -11,25 +11,32 @@ import datetime
 import json
 import os
 import re
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
 
 @dataclass
 class ScanInput:
-    """Content extracted from a file, with optional header metadata."""
+    """Content extracted from a file, with structured reader outcome state."""
     content: str
     header_line_indices: set = field(default_factory=set)
+    reader_error: str = ""
+    truncated: str = ""
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
-# Max bytes to scan per text file (avoid stalling on huge files)
-MAX_SCAN_BYTES = 2_000_000  # 2 MB
+# Historical name retained for importer compatibility. This limit is measured
+# in Unicode characters and remains the aggregate cap for DOCX extraction and
+# the source of the per-page PDF character cap.
+MAX_SCAN_BYTES = 2_000_000
 
-# Max cells to scan per xlsx sheet (avoid stalling on massive workbooks)
+# Max Unicode characters to scan per plain-text file. Text is read once as a
+# bounded whole so scan_content still sees the complete available context.
+MAX_SCAN_CHARS = 32_000_000
+
+# Max non-empty cells to scan across an xlsx workbook
 MAX_XLSX_CELLS = 50_000
 
 # Max pages to scan per PDF (avoid stalling on bulk exports)
@@ -184,21 +191,21 @@ DEFAULT_CONTEXT_KEYWORDS = {
 # File readers
 # ---------------------------------------------------------------------------
 
-def read_text_file(filepath: str) -> str:
-    """Read a plain text file up to MAX_SCAN_BYTES."""
+def read_text_file(filepath: str) -> ScanInput:
+    """Read bounded plain text and report any verified unread remainder."""
     try:
-        with open(filepath, "r", errors="replace") as f:
-            content = f.read(MAX_SCAN_BYTES)
-            # Check if file had more content beyond the limit
-            if f.read(1):
-                print(
-                    f"FERPA GUARD: Scanned first {MAX_SCAN_BYTES} bytes of {filepath}. "
-                    "Content beyond that limit was not checked.",
-                    file=sys.stderr,
-                )
-            return content
-    except (OSError, PermissionError):
-        return ""
+        f = open(filepath, "r", errors="replace")
+    except Exception:
+        return ScanInput(content="", reader_error="OPEN_FAILED")
+
+    content = ""
+    try:
+        with f as handle:
+            content = handle.read(MAX_SCAN_CHARS)
+            truncated = "TEXT_LIMIT" if handle.read(1) else ""
+        return ScanInput(content=content, truncated=truncated)
+    except Exception:
+        return ScanInput(content=content, reader_error="EXTRACTION_FAILED")
 
 
 def _looks_like_header(row) -> bool:
@@ -243,17 +250,18 @@ def read_xlsx_file(filepath: str) -> ScanInput:
     try:
         import openpyxl
     except ImportError:
-        # openpyxl not installed; fall back to skipping
-        return ScanInput(content="")
+        return ScanInput(content="", reader_error="MISSING_DEPENDENCY:openpyxl")
 
     try:
         wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
     except Exception:
-        return ScanInput(content="")
+        return ScanInput(content="", reader_error="OPEN_FAILED")
 
     lines = []
     cell_count = 0
     header_line_indices = set()
+    reader_error = ""
+    truncated = ""
 
     try:
         for sheet_name in wb.sheetnames:
@@ -261,33 +269,40 @@ def read_xlsx_file(filepath: str) -> ScanInput:
             lines.append(f"[Sheet: {sheet_name}]")
 
             for row_idx, row in enumerate(ws.iter_rows(values_only=True)):
-                if cell_count >= MAX_XLSX_CELLS:
-                    break
                 row_vals = []
                 for cell in row:
                     if cell is not None:
+                        if cell_count >= MAX_XLSX_CELLS:
+                            truncated = "XLSX_CELLS"
+                            break
                         row_vals.append(str(cell))
                         cell_count += 1
                 if row_vals:
                     if row_idx == 0 and _looks_like_header(row):
                         header_line_indices.add(len(lines))
                     lines.append(",".join(row_vals))
-
-            if cell_count >= MAX_XLSX_CELLS:
-                lines.append(f"[Scan limit reached: {MAX_XLSX_CELLS} cells]")
-                print(
-                    f"FERPA GUARD: Scanned first {MAX_XLSX_CELLS} cells of {filepath}. "
-                    "Content beyond that limit was not checked.",
-                    file=sys.stderr,
-                )
+                if truncated:
+                    break
+            if truncated:
                 break
+    except Exception:
+        reader_error = "EXTRACTION_FAILED"
     finally:
-        wb.close()
+        try:
+            wb.close()
+        except Exception:
+            if not reader_error:
+                reader_error = "EXTRACTION_FAILED"
 
-    return ScanInput(content="\n".join(lines), header_line_indices=header_line_indices)
+    return ScanInput(
+        content="\n".join(lines),
+        header_line_indices=header_line_indices,
+        reader_error=reader_error,
+        truncated=truncated,
+    )
 
 
-def read_pdf_file(filepath: str) -> str:
+def read_pdf_file(filepath: str) -> ScanInput:
     """Extract text from a PDF using PyMuPDF (fitz).
 
     Scans up to MAX_PDF_PAGES. Returns page text concatenated with
@@ -296,36 +311,50 @@ def read_pdf_file(filepath: str) -> str:
     try:
         import fitz
     except ImportError:
-        # PyMuPDF not installed; skip
-        return ""
+        return ScanInput(content="", reader_error="MISSING_DEPENDENCY:pymupdf")
 
     try:
         doc = fitz.open(filepath)
     except Exception:
-        return ""
+        return ScanInput(content="", reader_error="OPEN_FAILED")
 
     lines = []
+    reader_error = ""
+    truncated = ""
     try:
-        for i, page in enumerate(doc):
-            if i >= MAX_PDF_PAGES:
-                lines.append(f"[Scan limit reached: {MAX_PDF_PAGES} pages]")
-                print(
-                    f"FERPA GUARD: Scanned first {MAX_PDF_PAGES} pages of {filepath}. "
-                    "Content beyond that limit was not checked.",
-                    file=sys.stderr,
-                )
-                break
+        if doc.needs_pass or doc.is_encrypted:
+            return ScanInput(content="", reader_error="ENCRYPTED")
+
+        page_count = doc.page_count
+        if page_count > MAX_PDF_PAGES:
+            truncated = "PDF_PAGES"
+
+        page_char_limit = MAX_SCAN_BYTES // MAX_PDF_PAGES
+        for i in range(min(page_count, MAX_PDF_PAGES)):
+            page = doc[i]
             text = page.get_text()
             if text.strip():
                 lines.append(f"[Page {i + 1}]")
-                lines.append(text[:MAX_SCAN_BYTES // MAX_PDF_PAGES])
+                lines.append(text[:page_char_limit])
+                if len(text) > page_char_limit and not truncated:
+                    truncated = "PDF_PAGE_LIMIT"
+    except Exception:
+        reader_error = "EXTRACTION_FAILED"
     finally:
-        doc.close()
+        try:
+            doc.close()
+        except Exception:
+            if not reader_error:
+                reader_error = "EXTRACTION_FAILED"
 
-    return "\n".join(lines)
+    return ScanInput(
+        content="\n".join(lines),
+        reader_error=reader_error,
+        truncated=truncated,
+    )
 
 
-def read_docx_file(filepath: str) -> str:
+def read_docx_file(filepath: str) -> ScanInput:
     """Extract text from a .docx file using python-docx.
 
     Reads paragraph text and table cell text, capped at MAX_SCAN_BYTES.
@@ -333,52 +362,53 @@ def read_docx_file(filepath: str) -> str:
     try:
         from docx import Document
     except ImportError:
-        # python-docx not installed; skip
-        return ""
+        return ScanInput(content="", reader_error="MISSING_DEPENDENCY:python-docx")
 
     try:
         doc = Document(filepath)
     except Exception:
-        return ""
+        return ScanInput(content="", reader_error="OPEN_FAILED")
 
     parts = []
     total = 0
 
-    scan_limited = False
+    reader_error = ""
+    truncated = ""
 
-    for para in doc.paragraphs:
-        text = para.text
-        if text.strip():
-            parts.append(text)
-            total += len(text)
-            if total >= MAX_SCAN_BYTES:
-                scan_limited = True
-                parts.append("[Scan limit reached]")
+    def add_text(text):
+        nonlocal total, truncated
+        if not text.strip():
+            return
+        if total >= MAX_SCAN_BYTES:
+            truncated = "DOCX_LIMIT"
+            return
+        parts.append(text)
+        total += len(text)
+
+    try:
+        for para in doc.paragraphs:
+            add_text(para.text)
+            if truncated:
                 break
 
-    if not scan_limited:
-        for table in doc.tables:
-            for row in table.rows:
-                cells = [cell.text for cell in row.cells if cell.text.strip()]
-                if cells:
-                    line = ",".join(cells)
-                    parts.append(line)
-                    total += len(line)
-                    if total >= MAX_SCAN_BYTES:
-                        scan_limited = True
-                        parts.append("[Scan limit reached]")
+        if not truncated:
+            for table in doc.tables:
+                for row in table.rows:
+                    cells = [cell.text for cell in row.cells if cell.text.strip()]
+                    if cells:
+                        add_text(",".join(cells))
+                    if truncated:
                         break
-            if scan_limited:
-                break
+                if truncated:
+                    break
+    except Exception:
+        reader_error = "EXTRACTION_FAILED"
 
-    if scan_limited:
-        print(
-            f"FERPA GUARD: Scanned first {MAX_SCAN_BYTES} bytes of {filepath}. "
-            "Content beyond that limit was not checked.",
-            file=sys.stderr,
-        )
-
-    return "\n".join(parts)
+    return ScanInput(
+        content="\n".join(parts),
+        reader_error=reader_error,
+        truncated=truncated,
+    )
 
 
 def read_file_content(filepath: str) -> ScanInput:
@@ -388,14 +418,14 @@ def read_file_content(filepath: str) -> ScanInput:
     if ext == ".xlsx":
         return read_xlsx_file(filepath)
     elif ext == ".pdf":
-        return ScanInput(content=read_pdf_file(filepath))
+        return read_pdf_file(filepath)
     elif ext == ".docx":
-        return ScanInput(content=read_docx_file(filepath))
+        return read_docx_file(filepath)
     elif ext == ".xls":
         # .xls (legacy format) not supported by openpyxl; scan as binary text
-        return ScanInput(content=read_text_file(filepath))
+        return read_text_file(filepath)
     else:
-        return ScanInput(content=read_text_file(filepath))
+        return read_text_file(filepath)
 
 
 # ---------------------------------------------------------------------------
@@ -564,6 +594,55 @@ def scan_content(content: str, header_line_indices: set = None,
         _calculate_confidence(findings, total_lines=total_lines)
 
     return findings
+
+
+_READER_ERROR_DESCRIPTIONS = {
+    "MISSING_DEPENDENCY:openpyxl": "The spreadsheet scanner (openpyxl) is not installed",
+    "MISSING_DEPENDENCY:pymupdf": "The PDF scanner (PyMuPDF) is not installed",
+    "MISSING_DEPENDENCY:python-docx": "The document scanner (python-docx) is not installed",
+    "OPEN_FAILED": "The file could not be opened safely",
+    "ENCRYPTED": "The PDF is encrypted or password-protected",
+    "EXTRACTION_FAILED": "The scanner stopped while extracting the file",
+    "UNREADABLE": "The file is unreadable",
+}
+
+_TRUNCATION_DESCRIPTIONS = {
+    "TEXT_LIMIT": "The text scan limit left part of the file unchecked",
+    "XLSX_CELLS": "The spreadsheet cell limit left part of the file unchecked",
+    "PDF_PAGES": "The PDF page limit left part of the file unchecked",
+    "PDF_PAGE_LIMIT": "The PDF per-page text limit left part of the file unchecked",
+    "DOCX_LIMIT": "The document text limit left part of the file unchecked",
+}
+
+
+def reader_error_finding(code: str, filepath: str) -> dict:
+    """Create a sanitized blocking finding for a reader failure."""
+    safe_code = code if code in _READER_ERROR_DESCRIPTIONS else "UNREADABLE"
+    return {
+        "pattern_name": "SCAN_READER_UNAVAILABLE",
+        "description": _READER_ERROR_DESCRIPTIONS[safe_code],
+        "severity": "high",
+        "confidence": "high",
+        "count": 1,
+        "header_only": False,
+        "is_metadata": False,
+        "code": safe_code,
+    }
+
+
+def scan_incomplete_finding(code: str, filepath: str) -> dict:
+    """Create a sanitized blocking finding for verified omitted content."""
+    safe_code = code if code in _TRUNCATION_DESCRIPTIONS else "TEXT_LIMIT"
+    return {
+        "pattern_name": "SCAN_INCOMPLETE",
+        "description": _TRUNCATION_DESCRIPTIONS[safe_code],
+        "severity": "high",
+        "confidence": "high",
+        "count": 1,
+        "header_only": False,
+        "is_metadata": False,
+        "code": safe_code,
+    }
 
 
 # Patterns whose matches are structurally unambiguous (always HIGH confidence)

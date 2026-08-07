@@ -29,6 +29,8 @@ from shared.pii_engine import (
     should_scan,
     decide_action,
     worst_action,
+    reader_error_finding,
+    scan_incomplete_finding,
     SCANNABLE_EXTENSIONS,
 )
 from shared.pii_redactor import (
@@ -210,16 +212,21 @@ def scan_file(file_path: str) -> dict:
 
     # Read content
     scan_input = read_file_content(file_path)
-    if not scan_input.content:
+    findings = scan_content(scan_input.content, scan_input.header_line_indices)
+    if scan_input.reader_error:
+        findings.append(reader_error_finding(scan_input.reader_error, file_path))
+    if scan_input.truncated:
+        findings.append(scan_incomplete_finding(scan_input.truncated, file_path))
+
+    if not scan_input.content and not findings:
         return {
             "file_path": file_path,
             "findings": [],
             "action": "allow",
-            "summary": "File is empty or could not be read.",
+            "reader_error": "",
+            "truncated": "",
+            "summary": "File is empty.",
         }
-
-    # Scan
-    findings = scan_content(scan_input.content, scan_input.header_line_indices)
 
     # Determine action
     action = worst_action(findings) if findings else "allow"
@@ -227,6 +234,8 @@ def scan_file(file_path: str) -> dict:
     # Build response
     result = {
         "file_path": file_path,
+        "reader_error": scan_input.reader_error,
+        "truncated": scan_input.truncated,
         "findings": [
             {
                 "pattern_name": f["pattern_name"],
@@ -239,7 +248,7 @@ def scan_file(file_path: str) -> dict:
         ],
         "action": action,
         "summary": (
-            f"Found {len(findings)} PII pattern type(s). Action: {action}."
+            f"Found {len(findings)} finding type(s). Action: {action}."
             if findings
             else "No PII detected."
         ),

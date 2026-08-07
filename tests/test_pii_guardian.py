@@ -252,14 +252,14 @@ class TestFileReaders(unittest.TestCase):
             f.write("name,ssn\nJane,123-45-6789\n")
             path = f.name
         try:
-            content = read_text_file(path)
-            self.assertIn("123-45-6789", content)
+            scan_input = read_text_file(path)
+            self.assertIn("123-45-6789", scan_input.content)
         finally:
             os.unlink(path)
 
     def test_read_text_file_nonexistent(self):
-        content = read_text_file("/tmp/does_not_exist_pii_test.csv")
-        self.assertEqual(content, "")
+        scan_input = read_text_file("/tmp/does_not_exist_pii_test.csv")
+        self.assertEqual(scan_input.content, "")
 
     def test_read_xlsx_file(self):
         try:
@@ -297,15 +297,15 @@ class TestFileReaders(unittest.TestCase):
         doc.close()
 
         try:
-            content = read_pdf_file(path)
-            self.assertIn("123-45-6789", content)
-            self.assertIn("[Page 1]", content)
+            scan_input = read_pdf_file(path)
+            self.assertIn("123-45-6789", scan_input.content)
+            self.assertIn("[Page 1]", scan_input.content)
         finally:
             os.unlink(path)
 
     def test_read_pdf_file_nonexistent(self):
-        content = read_pdf_file("/tmp/does_not_exist_pii_test.pdf")
-        self.assertEqual(content, "")
+        scan_input = read_pdf_file("/tmp/does_not_exist_pii_test.pdf")
+        self.assertEqual(scan_input.content, "")
 
     def test_read_docx_file(self):
         try:
@@ -323,16 +323,16 @@ class TestFileReaders(unittest.TestCase):
         doc.save(path)
 
         try:
-            content = read_docx_file(path)
-            self.assertIn("123-45-6789", content)
-            self.assertIn("student_id", content)
-            self.assertIn("99999", content)
+            scan_input = read_docx_file(path)
+            self.assertIn("123-45-6789", scan_input.content)
+            self.assertIn("student_id", scan_input.content)
+            self.assertIn("99999", scan_input.content)
         finally:
             os.unlink(path)
 
     def test_read_docx_file_nonexistent(self):
-        content = read_docx_file("/tmp/does_not_exist_pii_test.docx")
-        self.assertEqual(content, "")
+        scan_input = read_docx_file("/tmp/does_not_exist_pii_test.docx")
+        self.assertEqual(scan_input.content, "")
 
     def test_read_file_content_routes_correctly(self):
         """Verify the router picks the right reader by extension."""
@@ -921,8 +921,8 @@ class TestMetadataSplitHook(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
 
 
-class TestDiskCacheV2(unittest.TestCase):
-    """Disk cache wire format v2: {"version": 2, "entries": [...]}."""
+class TestDiskCacheV3(unittest.TestCase):
+    """Disk cache wire format v3: {"version": 3, "entries": [...]}."""
 
     SCRIPT = str(_claude_code_dir / "pii_guardian.py") if _claude_code_dir.is_dir() else str(Path(__file__).parent / "pii_guardian.py")
 
@@ -939,7 +939,7 @@ class TestDiskCacheV2(unittest.TestCase):
     def _cache_path(self, home):
         return Path(home) / ".claude" / "ferpa-guard-cache.json"
 
-    def test_writer_emits_v2(self):
+    def test_writer_emits_v3(self):
         with tempfile.TemporaryDirectory() as home:
             Path(home, ".claude").mkdir()
             path = os.path.join(home, "emails.csv")
@@ -952,7 +952,7 @@ class TestDiskCacheV2(unittest.TestCase):
             self.assertEqual(result.returncode, 0)
             data = json.loads(self._cache_path(home).read_text())
             self.assertIsInstance(data, dict)
-            self.assertEqual(data["version"], 2)
+            self.assertEqual(data["version"], 3)
             self.assertIsInstance(data["entries"], list)
             self.assertGreaterEqual(len(data["entries"]), 1)
 
@@ -2507,7 +2507,7 @@ class TestScanCacheDisk(unittest.TestCase):
                 self.assertTrue(cache_path.exists(), "Disk cache file should be created")
                 data = json.loads(cache_path.read_text())
                 self.assertIsInstance(data, dict)
-                self.assertEqual(data["version"], 2)
+                self.assertEqual(data["version"], 3)
                 self.assertIsInstance(data["entries"], list)
             finally:
                 os.unlink(data_path)

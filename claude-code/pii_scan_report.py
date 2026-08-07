@@ -23,6 +23,8 @@ from shared.pii_engine import (
     scan_content,
     read_file_content,
     should_scan,
+    reader_error_finding,
+    scan_incomplete_finding,
     SKIP_DIRS,
     SCANNABLE_EXTENSIONS,
 )
@@ -57,6 +59,7 @@ def scan_directory(directory: str) -> dict:
     results = {
         "directory": directory,
         "blocked": [],    # Files with PII findings
+        "unscannable": [],  # Files that could not be checked completely
         "clean": [],      # Scannable files with no PII
         "skipped": [],    # Files not in SCANNABLE_EXTENSIONS or in SKIP_DIRS
         "errors": [],     # Files that failed to read
@@ -84,12 +87,21 @@ def scan_directory(directory: str) -> dict:
                 results["errors"].append({"path": filepath, "error": str(e)})
                 continue
 
-            if not scan_input.content:
-                results["clean"].append(filepath)
-                continue
-
             findings = scan_content(scan_input.content, scan_input.header_line_indices)
-            if findings:
+            if scan_input.reader_error:
+                findings.append(reader_error_finding(scan_input.reader_error, filepath))
+            if scan_input.truncated:
+                findings.append(scan_incomplete_finding(scan_input.truncated, filepath))
+
+            if scan_input.reader_error or scan_input.truncated:
+                findings.sort(key=severity_key)
+                results["unscannable"].append({
+                    "path": filepath,
+                    "reader_error": scan_input.reader_error,
+                    "truncated": scan_input.truncated,
+                    "findings": findings,
+                })
+            elif findings:
                 findings.sort(key=severity_key)
                 results["blocked"].append({
                     "path": filepath,
@@ -116,14 +128,14 @@ def max_severity(findings: list[dict]) -> str:
 def format_text_report(results: dict) -> str:
     """Format a human-readable report."""
     lines = []
-    total = len(results["blocked"]) + len(results["clean"]) + len(results["skipped"])
 
     lines.append("")
     lines.append("FERPA GUARD SCAN REPORT")
     lines.append(f"Directory: {results['directory']}")
     lines.append(
-        f"Scanned: {len(results['blocked']) + len(results['clean'])} files | "
+        f"Scanned: {len(results['blocked']) + len(results['clean']) + len(results['unscannable'])} files | "
         f"Blocked: {len(results['blocked'])} | "
+        f"Could not check: {len(results['unscannable'])} | "
         f"Clean: {len(results['clean'])} | "
         f"Skipped: {len(results['skipped'])}"
     )
@@ -155,6 +167,50 @@ def format_text_report(results: dict) -> str:
             if redactor_supported:
                 redactor_path = str(Path(__file__).parent.parent / "shared" / "pii_redactor.py")
                 lines.append(f"         Redact: python3 \"{redactor_path}\" \"{item['path']}\"")
+            lines.append("")
+
+    # Files whose readers failed or omitted verified content
+    if results["unscannable"]:
+        lines.append("-" * 60)
+        lines.append("COULD NOT CHECK")
+        lines.append("-" * 60)
+        for item in results["unscannable"]:
+            p = Path(item["path"])
+            operational = [
+                f for f in item["findings"]
+                if f["pattern_name"] in {"SCAN_READER_UNAVAILABLE", "SCAN_INCOMPLETE"}
+            ]
+            detections = [
+                f for f in item["findings"]
+                if f["pattern_name"] not in {"SCAN_READER_UNAVAILABLE", "SCAN_INCOMPLETE"}
+            ]
+            lines.append(f"  {p.name}")
+            lines.append(f"         {item['path']}")
+            for finding in operational:
+                lines.append(f"         - Could not check: {finding['description']}")
+            for finding in detections:
+                lines.append(
+                    f"         - Also detected in checked portion: {finding['description']} "
+                    f"({finding['count']} occurrence(s))"
+                )
+
+            dependency_commands = {
+                "MISSING_DEPENDENCY:openpyxl": "pip install openpyxl",
+                "MISSING_DEPENDENCY:pymupdf": "pip install pymupdf",
+                "MISSING_DEPENDENCY:python-docx": "pip install python-docx",
+            }
+            install_command = dependency_commands.get(item["reader_error"])
+            if install_command:
+                lines.append(f"         1. Install it: `{install_command}`, then retry.")
+            elif item["reader_error"] == "ENCRYPTED":
+                lines.append("         1. Make an unlocked copy with permission, then retry.")
+            else:
+                lines.append("         1. Confirm the file is readable and complete, then retry.")
+            lines.append("         2. Convert the file to CSV and retry.")
+            lines.append(
+                "         3. If you verified this exact file is safe, add its full path to "
+                "a .pii-guardian-allow file or ~/.claude/ferpa-guard-allow.txt."
+            )
             lines.append("")
 
     # Clean files
@@ -221,13 +277,15 @@ def format_json_report(results: dict) -> str:
     output = {
         "directory": results["directory"],
         "summary": {
-            "scanned": len(results["blocked"]) + len(results["clean"]),
+            "scanned": len(results["blocked"]) + len(results["clean"]) + len(results["unscannable"]),
             "blocked": len(results["blocked"]),
+            "unscannable": len(results["unscannable"]),
             "clean": len(results["clean"]),
             "skipped": len(results["skipped"]),
             "errors": len(results["errors"]),
         },
         "blocked": results["blocked"],
+        "unscannable": results["unscannable"],
         "clean": results["clean"],
         "skipped": results["skipped"],
         "errors": results["errors"],
@@ -257,8 +315,8 @@ def main():
     else:
         print(format_text_report(results))
 
-    # Exit code: 1 if any PII found, 0 if clean
-    sys.exit(1 if results["blocked"] else 0)
+    # Exit 0 means every scannable file was checked fully and was clean.
+    sys.exit(1 if (results["blocked"] or results["unscannable"] or results["errors"]) else 0)
 
 
 if __name__ == "__main__":

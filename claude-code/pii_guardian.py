@@ -37,6 +37,8 @@ from shared.pii_engine import (
     worst_action,
     SCANNABLE_EXTENSIONS,
     collect_allowfile_entries,
+    reader_error_finding,
+    scan_incomplete_finding,
     write_audit_event,
 )
 
@@ -55,13 +57,18 @@ FEEDBACK_LOG_PATH = Path.home() / ".claude" / "ferpa-guard-feedback.log"
 # Cache TTL: 1 hour max. Disk persistence optional via FERPA_GUARD_CACHE=1.
 
 _CACHE_TTL = 3600
-# Disk-cache wire format version. Bumped to 2 with the metadata-vs-value
-# split: v1 findings lack is_metadata and predate the action cap.
-_CACHE_VERSION = 2  # 1 hour in seconds
+# Disk-cache wire format version. Version 3 rejects every pre-fail-closed
+# verdict so a previously cached empty result cannot bypass fixed readers.
+_CACHE_VERSION = 3
 _DISK_CACHE_PATH = Path.home() / ".claude" / "ferpa-guard-cache.json"
 
 # In-memory cache: { (path, mtime, size): { "findings": [...], "cached_at": float } }
 _scan_cache: dict[tuple, dict] = {}
+_OPERATIONAL_PATTERNS = {"SCAN_READER_UNAVAILABLE", "SCAN_INCOMPLETE"}
+
+
+def _has_operational_findings(findings: list[dict]) -> bool:
+    return any(f.get("pattern_name") in _OPERATIONAL_PATTERNS for f in findings)
 
 
 def _cache_key(resolved_path: str) -> tuple | None:
@@ -81,11 +88,17 @@ def _cache_get(key: tuple) -> list[dict] | None:
     if time.time() - entry["cached_at"] > _CACHE_TTL:
         del _scan_cache[key]
         return None
-    return entry["findings"]
+    findings = entry["findings"]
+    if _has_operational_findings(findings):
+        del _scan_cache[key]
+        return None
+    return findings
 
 
 def _cache_put(key: tuple, findings: list[dict]) -> None:
     """Store findings in cache."""
+    if _has_operational_findings(findings):
+        return
     _scan_cache[key] = {"findings": findings, "cached_at": time.time()}
 
 
@@ -97,16 +110,16 @@ def _load_disk_cache() -> None:
         return
     try:
         data = json.loads(_DISK_CACHE_PATH.read_text())
-        # Wire format v2: {"version": 2, "entries": [...]}. Anything else --
-        # the pre-split top-level list, a versionless dict, malformed JSON --
-        # is ignored wholesale (cold cache, never migrated): those findings
-        # predate the metadata-vs-value split and cannot be trusted.
+        # Wire format v3: {"version": 3, "entries": [...]}. Anything else is
+        # ignored wholesale (cold cache, never migrated) because older
+        # versions may contain fail-open reader verdicts.
         if not isinstance(data, dict) or data.get("version") != _CACHE_VERSION:
             return
         now = time.time()
         for entry in data.get("entries", []):
             key = tuple(entry["key"])
-            if now - entry["cached_at"] <= _CACHE_TTL:
+            if (now - entry["cached_at"] <= _CACHE_TTL
+                    and not _has_operational_findings(entry["findings"])):
                 _scan_cache[key] = {
                     "findings": entry["findings"],
                     "cached_at": entry["cached_at"],
@@ -123,7 +136,8 @@ def _save_disk_cache() -> None:
         now = time.time()
         entries = []
         for key, val in _scan_cache.items():
-            if now - val["cached_at"] <= _CACHE_TTL:
+            if (now - val["cached_at"] <= _CACHE_TTL
+                    and not _has_operational_findings(val["findings"])):
                 entries.append({
                     "key": list(key),
                     "findings": val["findings"],
@@ -332,6 +346,118 @@ def format_block_reason(filepath: str, findings: list[dict]) -> str:
     return "\n".join(user_lines + claude_lines)
 
 
+def _operational_reason(finding: dict) -> str:
+    description = finding.get("description", "The scanner could not verify the file")
+    return description[:1].lower() + description[1:]
+
+
+def _operational_recovery_lines(filepath: str, findings: list[dict]) -> list[str]:
+    p = Path(filepath)
+    codes = {f.get("code", "") for f in findings}
+    dependency_commands = {
+        "MISSING_DEPENDENCY:openpyxl": "pip install openpyxl",
+        "MISSING_DEPENDENCY:pymupdf": "pip install pymupdf",
+        "MISSING_DEPENDENCY:python-docx": "pip install python-docx",
+    }
+    install_command = next(
+        (command for code, command in dependency_commands.items() if code in codes),
+        None,
+    )
+
+    if install_command:
+        first = f"1. Install it: `{install_command}`, then retry."
+    elif "ENCRYPTED" in codes:
+        first = "1. Make an unlocked copy with permission from the file owner, then retry."
+    else:
+        first = "1. Confirm the file is readable and complete, then retry."
+
+    return [
+        first,
+        "2. Convert the file to CSV and retry.",
+        "3. If you have verified this exact file is safe, add its full path to a "
+        f"`.pii-guardian-allow` file in `{p.parent}` (takes effect immediately), or to "
+        "`~/.claude/ferpa-guard-allow.txt`.",
+    ]
+
+
+def format_unscannable_reason(filepath: str, findings: list[dict]) -> str:
+    """Format an operational-only block without claiming PII was detected."""
+    p = Path(filepath)
+    reasons = "; ".join(_operational_reason(f) for f in findings)
+    codes = {f.get("code", "") for f in findings}
+    no_content_codes = {
+        "MISSING_DEPENDENCY:openpyxl",
+        "MISSING_DEPENDENCY:pymupdf",
+        "MISSING_DEPENDENCY:python-docx",
+        "OPEN_FAILED",
+        "ENCRYPTED",
+        "UNREADABLE",
+    }
+    if codes and codes <= no_content_codes:
+        read_status = "No file contents were read."
+    else:
+        read_status = "Only part of the file may have been checked."
+
+    lines = [
+        f"FERPA Guard blocked '{p.name}' because it could not check this file: {reasons}.",
+        read_status,
+    ]
+    lines.extend(_operational_recovery_lines(filepath, findings))
+    return "\n".join(lines)
+
+
+def format_partial_scan_reason(
+    filepath: str,
+    detection_findings: list[dict],
+    operational_findings: list[dict] | None = None,
+) -> str:
+    """Format a block containing both detections and an incomplete scan."""
+    if operational_findings is None:
+        all_findings = detection_findings
+        detection_findings = [
+            f for f in all_findings
+            if f.get("pattern_name") not in _OPERATIONAL_PATTERNS
+        ]
+        operational_findings = [
+            f for f in all_findings
+            if f.get("pattern_name") in _OPERATIONAL_PATTERNS
+        ]
+
+    p = Path(filepath)
+    lines = [
+        f"FERPA Guard blocked '{p.name}'.",
+        "FERPA Guard detected the following in the portion it could check, and could not verify the remainder.",
+        "",
+        "Detected in the checked portion:",
+    ]
+    for finding in detection_findings:
+        confidence = finding.get("confidence", "high").upper()
+        lines.append(
+            f"  [{finding['severity'].upper()}/{confidence}] "
+            f"{finding['description']}: {finding['count']} occurrence(s)"
+        )
+    lines.extend(["", "Why the remainder could not be verified:"])
+    for finding in operational_findings:
+        lines.append(f"  - {_operational_reason(finding)}")
+    lines.append("")
+    lines.extend(_operational_recovery_lines(filepath, operational_findings))
+    return "\n".join(lines)
+
+
+def _format_block_reason_dispatch(filepath: str, findings: list[dict]) -> str:
+    operational = [
+        f for f in findings if f.get("pattern_name") in _OPERATIONAL_PATTERNS
+    ]
+    detections = [
+        f for f in findings if f.get("pattern_name") not in _OPERATIONAL_PATTERNS
+    ]
+    if operational and detections:
+        return format_partial_scan_reason(filepath, detections, operational)
+    if operational:
+        return format_unscannable_reason(filepath, operational)
+    return format_block_reason(filepath, detections)
+
+
 def format_warning(filepath: str, findings: list[dict]) -> str:
     """Format a warning for possible PII (allowed but flagged)."""
     lines = [
@@ -524,9 +650,14 @@ def main():
         findings = scan_content(scan_input.content, scan_input.header_line_indices,
                                 early_exit=True,
                                 skip_patterns=file_skip if file_skip else None)
+        if scan_input.reader_error:
+            findings.append(reader_error_finding(scan_input.reader_error, fp))
+        if scan_input.truncated:
+            findings.append(scan_incomplete_finding(scan_input.truncated, fp))
 
-        # Cache the result (only when no skip_patterns, since skips change results)
-        if cache_key and not file_skip:
+        # Cache only complete reader outcomes and only when skip_patterns did
+        # not alter the result.
+        if cache_key and not file_skip and not _has_operational_findings(findings):
             _cache_put(cache_key, findings)
 
         if findings:
@@ -545,7 +676,7 @@ def main():
             write_audit_event(
                 AUDIT_LOG_PATH, "block", fp, [f["pattern_name"] for f in findings]
             )
-            reasons.append(format_block_reason(fp, findings))
+            reasons.append(_format_block_reason_dispatch(fp, findings))
         _save_disk_cache()
         output_deny("\n\n".join(reasons))
 
@@ -575,7 +706,7 @@ def main():
     if block_files:
         reasons = []
         for fp, findings in block_files.items():
-            reasons.append(format_block_reason(fp, findings))
+            reasons.append(_format_block_reason_dispatch(fp, findings))
         _save_disk_cache()
         output_deny("\n\n".join(reasons))
 
