@@ -21,7 +21,10 @@ import sys
 import tempfile
 import time
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 from pathlib import Path
+from unittest import mock
 
 # Add project root to path for shared package imports
 _project_root = Path(__file__).parent.parent
@@ -597,6 +600,248 @@ class TestHookProtocol(unittest.TestCase):
             text=True,
         )
         self.assertEqual(result.returncode, 0)
+
+
+class TestPrivateControlHardDeny(unittest.TestCase):
+    """Protected control paths are denied before every bypass or reader."""
+
+    ROOT = Path("/Users/chivheng/.local/share/spreadsheet-assurance/private-control")
+    REASON = "Access to protected private control data is denied."
+
+    def _run_hook(self, tool_name, tool_input, env_extra=None):
+        payload = json.dumps({"tool_name": tool_name, "tool_input": tool_input})
+        env = os.environ.copy()
+        if env_extra:
+            env.update(env_extra)
+        return subprocess.run(
+            [sys.executable, TestHookProtocol.SCRIPT],
+            input=payload,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+    def _assert_generic_deny(self, result, requested_path):
+        self.assertEqual(2, result.returncode)
+        self.assertEqual(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": self.REASON,
+                }
+            },
+            json.loads(result.stdout),
+        )
+        self.assertEqual(self.REASON, result.stderr.strip())
+        self.assertNotIn(str(self.ROOT), result.stdout + result.stderr)
+        self.assertNotIn(str(requested_path), result.stdout + result.stderr)
+
+    def test_exact_root_and_descendant_are_denied_component_safely(self):
+        self.assertTrue(pg_hook.path_is_hard_denied(self.ROOT))
+        self.assertTrue(pg_hook.path_is_hard_denied(self.ROOT / "synthetic" / "record.csv"))
+        self.assertFalse(pg_hook.path_is_hard_denied(self.ROOT.parent / "private-control-backup" / "record.csv"))
+
+    def test_relative_and_dotdot_paths_are_normalized(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "control"
+            root.mkdir()
+            with mock.patch.object(pg_hook, "HARD_DENY_ROOTS", (root,)), mock.patch("os.getcwd", return_value=tmp):
+                self.assertTrue(pg_hook.path_is_hard_denied(Path("control/segment/../record.csv")))
+                self.assertFalse(pg_hook.path_is_hard_denied(Path("control/../outside.csv")))
+
+    def test_lexical_inside_symlink_pointing_out_remains_denied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "control"
+            outside = base / "outside"
+            root.mkdir()
+            outside.mkdir()
+            (root / "link").symlink_to(outside, target_is_directory=True)
+            with mock.patch.object(pg_hook, "HARD_DENY_ROOTS", (root,)):
+                self.assertTrue(pg_hook.path_is_hard_denied(root / "link" / "record.csv"))
+
+    def test_outside_symlink_resolving_inside_is_denied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "control"
+            root.mkdir()
+            link = base / "outside-link"
+            link.symlink_to(root, target_is_directory=True)
+            with mock.patch.object(pg_hook, "HARD_DENY_ROOTS", (root,)):
+                self.assertTrue(pg_hook.path_is_hard_denied(link / "record.csv"))
+
+    def test_read_bash_and_edit_deny_nonexistent_protected_paths(self):
+        requested = self.ROOT / "synthetic-nonexistent.csv"
+        cases = (
+            ("Read", {"file_path": str(requested)}),
+            ("Bash", {"command": f"cat {requested}"}),
+            ("Edit", {"file_path": str(requested)}),
+        )
+        for tool_name, tool_input in cases:
+            with self.subTest(tool_name=tool_name):
+                self._assert_generic_deny(self._run_hook(tool_name, tool_input), requested)
+
+    def test_environment_allowlist_and_global_skips_cannot_bypass(self):
+        requested = self.ROOT / "allowlisted.csv"
+        result = self._run_hook(
+            "Read",
+            {"file_path": str(requested)},
+            {
+                "FERPA_GUARD_ALLOW": str(self.ROOT),
+                "FERPA_GUARD_SKIP_PATTERNS": "SSN,DOB,EMAIL",
+            },
+        )
+        self._assert_generic_deny(result, requested)
+
+    def test_file_allowlist_and_path_skip_cannot_bypass(self):
+        requested = self.ROOT / "file-allowlisted.csv"
+        with tempfile.TemporaryDirectory() as tmp:
+            claude = Path(tmp) / ".claude"
+            claude.mkdir()
+            (claude / "ferpa-guard-allow.txt").write_text(
+                f"{requested}\n{self.ROOT} SKIP:SSN,DOB\n",
+                encoding="utf-8",
+            )
+            result = self._run_hook("Read", {"file_path": str(requested)}, {"HOME": tmp})
+        self._assert_generic_deny(result, requested)
+
+    def test_clean_unsupported_and_cached_paths_cannot_bypass(self):
+        for name in ("clean.csv", "unsupported.py", "cached.csv"):
+            requested = self.ROOT / name
+            with self.subTest(name=name):
+                result = self._run_hook(
+                    "Read",
+                    {"file_path": str(requested)},
+                    {"FERPA_GUARD_CACHE": "1"},
+                )
+                self._assert_generic_deny(result, requested)
+
+    def test_multi_path_bash_denies_when_any_path_is_protected(self):
+        requested = self.ROOT / "second.csv"
+        result = self._run_hook(
+            "Bash",
+            {"command": f"cat /tmp/synthetic-safe.csv {requested}"},
+        )
+        self._assert_generic_deny(result, requested)
+
+    def test_metadata_commands_cannot_bypass_hard_deny(self):
+        requested = self.ROOT / "metadata-target"
+        for command in (f"ls {requested}", f"stat {requested}"):
+            with self.subTest(command=command):
+                self._assert_generic_deny(
+                    self._run_hook("Bash", {"command": command}),
+                    requested,
+                )
+
+    def test_content_commands_and_unsupported_extensions_cannot_bypass(self):
+        cases = (
+            self.ROOT / "script.py",
+            self.ROOT / "unsupported.binary",
+        )
+        commands = (
+            f"python3 {cases[0]}",
+            f"rg synthetic {cases[1]}",
+        )
+        for requested, command in zip(cases, commands):
+            with self.subTest(command=command):
+                self._assert_generic_deny(
+                    self._run_hook("Bash", {"command": command}),
+                    requested,
+                )
+
+    def test_later_unsupported_operand_and_quoted_space_path_cannot_bypass(self):
+        later = self.ROOT / "later-operand.noext"
+        spaced = self.ROOT / "folder with spaces" / "record.noext"
+        commands = (
+            (later, f"cat /tmp/synthetic-safe.csv {later}"),
+            (spaced, f'ls "{spaced}"'),
+        )
+        for requested, command in commands:
+            with self.subTest(command=command):
+                self._assert_generic_deny(
+                    self._run_hook("Bash", {"command": command}),
+                    requested,
+                )
+
+    def test_attached_shell_punctuation_cannot_hide_protected_paths(self):
+        requested = self.ROOT / "attached-shell-token.noext"
+        commands = (
+            f"cat<{requested}",
+            f"echo synthetic>{requested}",
+            f"cat {requested}|head",
+            f"cat {requested}&&true",
+            f"cat {requested};true",
+            f"(cat {requested})",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self._assert_generic_deny(
+                    self._run_hook("Bash", {"command": command}),
+                    requested,
+                )
+
+    def test_relative_dotdot_bash_reference_is_denied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "control"
+            root.mkdir()
+            payload = json.dumps({
+                "tool_name": "Bash",
+                "tool_input": {"command": "stat control/folder/../record.noext"},
+            })
+            with mock.patch.object(pg_hook, "HARD_DENY_ROOTS", (root,)), mock.patch("os.getcwd", return_value=tmp), mock.patch.object(sys, "stdin", StringIO(payload)), redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr:
+                with self.assertRaises(SystemExit) as raised:
+                    pg_hook.main()
+            self.assertEqual(2, raised.exception.code)
+            self.assertEqual(self.REASON, json.loads(stdout.getvalue())["hookSpecificOutput"]["permissionDecisionReason"])
+            self.assertNotIn("control/folder", stdout.getvalue() + stderr.getvalue())
+
+    def test_bash_outside_symlink_resolving_inward_is_denied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "control"
+            root.mkdir()
+            link = base / "outside-link"
+            link.symlink_to(root, target_is_directory=True)
+            requested = link / "record.noext"
+            payload = json.dumps({
+                "tool_name": "Bash",
+                "tool_input": {"command": f"ls {requested}"},
+            })
+            with mock.patch.object(pg_hook, "HARD_DENY_ROOTS", (root,)), mock.patch.object(sys, "stdin", StringIO(payload)), redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr:
+                with self.assertRaises(SystemExit) as raised:
+                    pg_hook.main()
+            self.assertEqual(2, raised.exception.code)
+            self.assertEqual(self.REASON, json.loads(stdout.getvalue())["hookSpecificOutput"]["permissionDecisionReason"])
+            self.assertNotIn(str(requested), stdout.getvalue() + stderr.getvalue())
+
+    def test_hard_deny_calls_no_cache_reader_scanner_or_audit_helpers(self):
+        requested = self.ROOT / "never-open.csv"
+        payload = json.dumps({"tool_name": "Read", "tool_input": {"file_path": str(requested)}})
+        guarded_helpers = (
+            "_load_disk_cache",
+            "_write_audit_entry",
+            "should_scan",
+            "_cache_key",
+            "_cache_get",
+            "read_file_content",
+            "scan_content",
+            "_save_disk_cache",
+        )
+        with mock.patch.object(sys, "stdin", StringIO(payload)), redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr:
+            patches = [mock.patch.object(pg_hook, name) for name in guarded_helpers]
+            mocks = [patch.start() for patch in patches]
+            try:
+                with self.assertRaises(SystemExit) as raised:
+                    pg_hook.main()
+            finally:
+                for patch in reversed(patches):
+                    patch.stop()
+        self.assertEqual(2, raised.exception.code)
+        for helper in mocks:
+            helper.assert_not_called()
+        self.assertNotIn(str(requested), stdout.getvalue() + stderr.getvalue())
 
 
 # ---------------------------------------------------------------------------

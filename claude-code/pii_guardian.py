@@ -21,6 +21,7 @@ import datetime
 import json
 import os
 import re
+import shlex
 import sys
 import time
 from pathlib import Path
@@ -48,6 +49,44 @@ from shared.pii_engine import (
 # during the re-wire transition would corrupt line-count signals.
 AUDIT_LOG_PATH = Path.home() / ".claude" / "logs" / "ferpa-guard-audit.jsonl"
 FEEDBACK_LOG_PATH = Path.home() / ".claude" / "ferpa-guard-feedback.log"
+
+HARD_DENY_ROOTS = (
+    Path("/Users/chivheng/.local/share/spreadsheet-assurance/private-control"),
+)
+_HARD_DENY_REASON = "Access to protected private control data is denied."
+
+
+def _contains_path(root: Path, candidate: Path) -> bool:
+    """Return whether candidate is root or a component-safe descendant."""
+    return candidate == root or root in candidate.parents
+
+
+def _lexical_absolute(path: Path) -> Path:
+    """Normalize a path lexically without requiring that it exists."""
+    return Path(os.path.normpath(os.path.abspath(os.fspath(path))))
+
+
+def path_is_hard_denied(path: Path) -> bool:
+    """Check protected roots by both lexical and best-effort real containment."""
+    candidate_lexical = _lexical_absolute(Path(path))
+
+    for configured_root in HARD_DENY_ROOTS:
+        root_lexical = _lexical_absolute(configured_root)
+        if _contains_path(root_lexical, candidate_lexical):
+            return True
+
+        # Resolve separately from the lexical check. A symlink pointing outward
+        # cannot undo lexical containment, while an outside symlink pointing
+        # inward is caught here. Missing final components are permitted.
+        try:
+            candidate_resolved = candidate_lexical.resolve(strict=False)
+            root_resolved = root_lexical.resolve(strict=False)
+        except (OSError, RuntimeError):
+            continue
+        if _contains_path(root_resolved, candidate_resolved):
+            return True
+
+    return False
 
 # ---------------------------------------------------------------------------
 # Scan Result Cache (FIX-02)
@@ -253,7 +292,10 @@ def extract_file_paths(tool_name: str, tool_input: dict) -> list[str]:
 
         # Bare unquoted data files (paths with data extensions anywhere in command)
         # Exclude output redirect targets by requiring no preceding > or >>
-        bare_data_files = re.findall(rf"(?:^|(?<!>)\s)([^\s\"'|;><]+\.(?:{data_exts}))(?:\s|$|[|;>])", cmd)
+        bare_data_files = re.findall(
+            rf"(?<!>\s)(?<!\S)([^\s\"'|;><]+\.(?:{data_exts}))(?=\s|$|[|;>])",
+            cmd,
+        )
         paths.extend(bare_data_files)
 
     # Deduplicate while preserving order
@@ -264,6 +306,46 @@ def extract_file_paths(tool_name: str, tool_input: dict) -> list[str]:
             seen.add(p)
             unique_paths.append(p)
     return unique_paths
+
+
+def extract_hard_deny_candidates(tool_name: str, tool_input: dict) -> list[str]:
+    """Extract path candidates for protected-root checks, independent of scanning.
+
+    Unlike ``extract_file_paths``, this intentionally considers metadata
+    commands, unsupported extensions, and every shell operand. False-positive
+    candidates are harmless because component-safe root containment remains the
+    deciding check.
+    """
+    if tool_name in ("Read", "Edit"):
+        file_path = tool_input.get("file_path", "")
+        return [file_path] if isinstance(file_path, str) and file_path else []
+    if tool_name != "Bash":
+        return []
+
+    command = tool_input.get("command", "")
+    if not isinstance(command, str) or not command:
+        return []
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        # An incomplete quote must not hide an otherwise visible protected
+        # reference. This fallback does not execute or expand shell syntax.
+        tokens = command.split()
+
+    candidates = []
+    for token in tokens:
+        candidate = token.strip("|&;<>()")
+        if not candidate:
+            continue
+        candidates.append(candidate)
+        if "=" in candidate:
+            assigned_value = candidate.split("=", 1)[1]
+            if assigned_value:
+                candidates.append(assigned_value)
+    return candidates
 
 
 # ---------------------------------------------------------------------------
@@ -529,6 +611,16 @@ def main():
     if tool_name not in ("Read", "Bash"):
         output_allow()
 
+    hard_deny_candidates = extract_hard_deny_candidates(tool_name, tool_input)
+
+    if any(path_is_hard_denied(Path(candidate)) for candidate in hard_deny_candidates):
+        output_deny(_HARD_DENY_REASON)
+
+    file_paths = extract_file_paths(tool_name, tool_input)
+
+    if not file_paths:
+        output_allow()
+
     # Load disk cache if enabled
     _load_disk_cache()
 
@@ -580,11 +672,6 @@ def main():
                         allowlist_sources[str(Path(line).resolve())] = f"file({allowlist_file})"
         except OSError:
             pass
-
-    file_paths = extract_file_paths(tool_name, tool_input)
-
-    if not file_paths:
-        output_allow()
 
     # Strict mode: block on ANY finding (restores pre-confidence behavior)
     strict_mode = bool(os.environ.get("FERPA_GUARD_STRICT"))
