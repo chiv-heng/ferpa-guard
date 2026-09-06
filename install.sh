@@ -171,7 +171,11 @@ else
 fi
 
 # Test 3: PII file should be blocked (exit 2)
-TEMP_PII=$(mktemp /tmp/pii-test-XXXXXX.csv)
+# A directory template, not a file template: macOS mktemp does not randomize
+# the X's when a suffix follows them, so /tmp/pii-test-XXXXXX.csv was a fixed
+# path shared by concurrent installs.
+TEMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/pii-test-XXXXXX")
+TEMP_PII="$TEMP_DIR/pii-test.csv"
 cat > "$TEMP_PII" << 'PIIEOF'
 student_id,name,grade,sasid,parent_email
 10234,Maria Santos,7,SASID 987654321,ana.santos@gmail.com
@@ -180,7 +184,7 @@ PIIEOF
 
 BLOCK_OUTPUT=$(echo "{\"tool_name\":\"Read\",\"tool_input\":{\"file_path\":\"$TEMP_PII\"}}" | python3 "$DEST/scripts/pii_guardian.py" 2>/dev/null)
 BLOCK_EXIT=$?
-rm -f "$TEMP_PII"
+rm -rf "$TEMP_DIR"
 
 if [ "$BLOCK_EXIT" = "2" ]; then
     pass "PII file: blocked (exit 2)"

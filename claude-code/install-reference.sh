@@ -148,7 +148,8 @@ else
 fi
 
 # Test 3: Create a temp file with PII and verify it blocks
-TEMP_PII=$(mktemp /tmp/pii-test-XXXXXX.csv)
+TEMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/pii-test-XXXXXX")   # dir template: a suffix after the X's defeats mktemp on macOS
+TEMP_PII="$TEMP_DIR/pii-test.csv"
 cat > "$TEMP_PII" << 'PIIEOF'
 student_id,name,grade,sasid,parent_email
 10234,Maria Santos,7,SASID 987654321,ana.santos@gmail.com
@@ -157,7 +158,7 @@ PIIEOF
 
 BLOCK_OUTPUT=$(echo "{\"tool_name\":\"Read\",\"tool_input\":{\"file_path\":\"$TEMP_PII\"}}" | python3 "$DEST/scripts/ferpa-guard.py" 2>/dev/null)
 BLOCK_EXIT=$?
-rm -f "$TEMP_PII"
+rm -rf "$TEMP_DIR"
 
 if [ "$BLOCK_EXIT" = "2" ]; then
     pass "PII file: blocked (exit 2)"
