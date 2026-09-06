@@ -11,6 +11,7 @@ import datetime
 import json
 import os
 import re
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -238,6 +239,55 @@ def _looks_like_header(row) -> bool:
     return True
 
 
+# OOXML parts that carry cell comments. Excel writes legacy comments as
+# xl/comments1.xml and threaded comments under xl/threadedComments/; openpyxl
+# writes xl/comments/comment1.xml. The read-only scanner never loads any of
+# them, so their presence is verified omission (spec 2.3).
+_XLSX_COMMENT_PARTS = re.compile(
+    r"^xl/(comments\d*\.xml|comments/[^/]+\.xml|threadedComments/[^/]+\.xml)$", re.I
+)
+
+# Core document properties scanned as [Property: <name>] lines (spec 2.3).
+# The redactor imports this so both surfaces cover the same seven fields.
+XLSX_CORE_PROPERTIES = (
+    "title", "subject", "description", "keywords", "creator", "lastModifiedBy", "category",
+)
+
+
+def xlsx_comment_status(filepath) -> str:
+    """Inspect the xlsx container for comment parts without loading the workbook.
+
+    Returns "present" when any member is a comment part, "absent" when the
+    member list was read completely and none matched, and "unknown" when the
+    container could not be opened or listed (BadZipFile, OSError, anything
+    else). Callers must treat "unknown" like "present": comments cannot be
+    ruled out.
+    """
+    try:
+        with zipfile.ZipFile(filepath) as zf:
+            names = zf.namelist()
+    except Exception:
+        return "unknown"
+    for name in names:
+        if _XLSX_COMMENT_PARTS.match(name):
+            return "present"
+    return "absent"
+
+
+def _xlsx_property_lines(wb) -> list[str]:
+    """Render the non-empty core properties of an openpyxl workbook."""
+    props = wb.properties
+    lines = []
+    for name in XLSX_CORE_PROPERTIES:
+        value = getattr(props, name, None)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            lines.append(f"[Property: {name}] {text}")
+    return lines
+
+
 def read_xlsx_file(filepath: str) -> ScanInput:
     """Extract cell text from an xlsx file using openpyxl.
 
@@ -245,17 +295,27 @@ def read_xlsx_file(filepath: str) -> ScanInput:
     preserving sheet names as context. The first row of each sheet is
     tagged as a header row only if it passes a heuristic check (all short
     text strings, no numeric or PII-like values). Scans up to
-    MAX_XLSX_CELLS total.
+    MAX_XLSX_CELLS total, then appends [Property: <name>] lines for the
+    non-empty core document properties (never header lines).
+
+    Cell comments are never loaded in read-only mode. When the container
+    holds comment parts, or cannot be inspected, the result is held with
+    truncated="XLSX_COMMENTS" (spec 2.3). That hold takes precedence over
+    XLSX_CELLS because `truncated` carries one code; either code blocks.
     """
     try:
         import openpyxl
     except ImportError:
         return ScanInput(content="", reader_error="MISSING_DEPENDENCY:openpyxl")
 
+    # Container check runs before any workbook load so the hold is recorded
+    # even when openpyxl cannot open the file; both findings then surface.
+    comment_hold = "XLSX_COMMENTS" if xlsx_comment_status(filepath) != "absent" else ""
+
     try:
         wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
     except Exception:
-        return ScanInput(content="", reader_error="OPEN_FAILED")
+        return ScanInput(content="", reader_error="OPEN_FAILED", truncated=comment_hold)
 
     lines = []
     cell_count = 0
@@ -285,6 +345,7 @@ def read_xlsx_file(filepath: str) -> ScanInput:
                     break
             if truncated:
                 break
+        lines.extend(_xlsx_property_lines(wb))
     except Exception:
         reader_error = "EXTRACTION_FAILED"
     finally:
@@ -293,6 +354,9 @@ def read_xlsx_file(filepath: str) -> ScanInput:
         except Exception:
             if not reader_error:
                 reader_error = "EXTRACTION_FAILED"
+
+    if comment_hold:
+        truncated = comment_hold
 
     return ScanInput(
         content="\n".join(lines),
@@ -612,6 +676,7 @@ _TRUNCATION_DESCRIPTIONS = {
     "PDF_PAGES": "The PDF page limit left part of the file unchecked",
     "PDF_PAGE_LIMIT": "The PDF per-page text limit left part of the file unchecked",
     "DOCX_LIMIT": "The document text limit left part of the file unchecked",
+    "XLSX_COMMENTS": "The spreadsheet has cell comments, or comments could not be ruled out, and the scanner cannot check them",
 }
 
 

@@ -737,6 +737,17 @@ def _operational_reason(finding: dict) -> str:
     return description[:1].lower() + description[1:]
 
 
+# Reader outcomes under which nothing of the file was read.
+_NO_CONTENT_CODES = {
+    "MISSING_DEPENDENCY:openpyxl",
+    "MISSING_DEPENDENCY:pymupdf",
+    "MISSING_DEPENDENCY:python-docx",
+    "OPEN_FAILED",
+    "ENCRYPTED",
+    "UNREADABLE",
+}
+
+
 def _operational_recovery_lines(filepath: str, findings: list[dict]) -> list[str]:
     p = Path(filepath)
     codes = {f.get("code", "") for f in findings}
@@ -756,7 +767,11 @@ def _operational_recovery_lines(filepath: str, findings: list[dict]) -> list[str
         "`~/.claude/ferpa-guard-allow.txt`."
     )
 
-    if "XLSX_COMMENTS" in codes:
+    # An open failure takes precedence: advising comment removal for a file
+    # that will not open is wrong. Only when the workbook was otherwise
+    # readable is the comment hold the reason to act on.
+    open_failure = bool(codes & _NO_CONTENT_CODES)
+    if "XLSX_COMMENTS" in codes and not open_failure:
         # Phase 0 (spec 2.3): comments are held, never read. Two ways forward
         # that keep the original out of the model, then the allowlist.
         return [
@@ -787,15 +802,10 @@ def format_unscannable_reason(filepath: str, findings: list[dict]) -> str:
     p = Path(filepath)
     reasons = "; ".join(_operational_reason(f) for f in findings)
     codes = {f.get("code", "") for f in findings}
-    no_content_codes = {
-        "MISSING_DEPENDENCY:openpyxl",
-        "MISSING_DEPENDENCY:pymupdf",
-        "MISSING_DEPENDENCY:python-docx",
-        "OPEN_FAILED",
-        "ENCRYPTED",
-        "UNREADABLE",
-    }
-    if codes and codes <= no_content_codes:
+    # XLSX_COMMENTS never reads content by itself, so it must not turn an
+    # open failure into "part of the file may have been checked".
+    content_codes = codes - {"XLSX_COMMENTS"}
+    if content_codes and content_codes <= _NO_CONTENT_CODES:
         read_status = "No file contents were read."
     else:
         read_status = "Only part of the file may have been checked."

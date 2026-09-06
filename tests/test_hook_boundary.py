@@ -448,5 +448,28 @@ class TestGrepHookEndToEnd(unittest.TestCase):
         self.assertEqual(0, r.returncode, r.stderr)
 
 
+class TestOperationalMessageForComments(unittest.TestCase):
+    """XLSX_COMMENTS messaging: recovery names comment removal only when the
+    workbook could be opened; an open failure keeps its own guidance and the
+    'nothing was read' status."""
+
+    def test_comments_hold_alone_offers_comment_recovery(self):
+        from shared.pii_engine import scan_incomplete_finding
+        f = [scan_incomplete_finding("XLSX_COMMENTS", "/d/book.xlsx")]
+        msg = pg_hook.format_unscannable_reason("/d/book.xlsx", f)
+        self.assertIn("Delete All Comments", msg)
+        self.assertIn("built-in redactor", msg)
+        self.assertIn("Only part of the file may have been checked.", msg)
+
+    def test_open_failure_with_comments_keeps_open_failure_guidance(self):
+        from shared.pii_engine import reader_error_finding, scan_incomplete_finding
+        f = [reader_error_finding("OPEN_FAILED", "/d/book.xlsx"),
+             scan_incomplete_finding("XLSX_COMMENTS", "/d/book.xlsx")]
+        msg = pg_hook.format_unscannable_reason("/d/book.xlsx", f)
+        self.assertIn("No file contents were read.", msg)
+        self.assertNotIn("Delete All Comments", msg)
+        self.assertIn("Confirm the file is readable", msg)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

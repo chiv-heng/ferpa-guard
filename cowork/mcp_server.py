@@ -35,6 +35,7 @@ from shared.pii_engine import (
 )
 from shared.pii_redactor import (
     SUPPORTED_EXTENSIONS,
+    RedactionVerificationError,
     _resolve_output_path,
     redact_csv,
     redact_xlsx,
@@ -291,24 +292,32 @@ def redact_file(file_path: str) -> dict:
     output_path = _resolve_output_path(path)
 
     # Dispatch by format
-    if ext == ".xlsx":
-        count = redact_xlsx(path, output_path)
-        unit = "cells"
-    elif ext == ".csv":
-        count = redact_csv(path, output_path, delimiter=",")
-        unit = "rows"
-    elif ext == ".tsv":
-        count = redact_csv(path, output_path, delimiter="\t")
-        unit = "rows"
-    elif ext == ".json":
-        count = redact_json(path, output_path)
-        unit = "values"
-    elif ext == ".jsonl":
-        count = redact_jsonl(path, output_path)
-        unit = "lines"
-    else:
-        count = redact_text_file(path, output_path)
-        unit = "lines"
+    try:
+        if ext == ".xlsx":
+            count = redact_xlsx(path, output_path)
+            unit = "cells"
+        elif ext == ".csv":
+            count = redact_csv(path, output_path, delimiter=",")
+            unit = "rows"
+        elif ext == ".tsv":
+            count = redact_csv(path, output_path, delimiter="\t")
+            unit = "rows"
+        elif ext == ".json":
+            count = redact_json(path, output_path)
+            unit = "values"
+        elif ext == ".jsonl":
+            count = redact_jsonl(path, output_path)
+            unit = "lines"
+        else:
+            count = redact_text_file(path, output_path)
+            unit = "lines"
+    except RedactionVerificationError as exc:
+        # Post-write verification failed; the redactor already deleted the output.
+        timestamp = datetime.datetime.now().isoformat(timespec="seconds")
+        _write_audit_entry(
+            f"[{timestamp}] REDACT path={file_path} output=none refused={exc}"
+        )
+        return {"error": f"{exc}; no output written."}
 
     result = {
         "output_path": str(output_path),

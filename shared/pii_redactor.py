@@ -30,7 +30,16 @@ _project_root = str(Path(__file__).parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-from shared.pii_engine import PII_PATTERNS
+from shared.pii_engine import PII_PATTERNS, XLSX_CORE_PROPERTIES, xlsx_comment_status
+
+
+class RedactionVerificationError(Exception):
+    """Raised when a redacted output fails post-write verification.
+
+    The output file has already been deleted when this is raised. The message
+    distinguishes "could not remove all comments" (comment parts still present)
+    from "output could not be verified" (the container could not be inspected).
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -162,9 +171,107 @@ def redact_text(text: str) -> str:
 
 SUPPORTED_EXTENSIONS = {".csv", ".tsv", ".txt", ".json", ".jsonl", ".xml", ".xlsx"}
 
+# Characters Excel forbids in sheet titles (openpyxl rejects them too).
+_EXCEL_TITLE_FORBIDDEN = set("\\/?*[]:")
+_EXCEL_TITLE_MAX = 31
+
+
+def _excel_safe_title(title: str) -> str:
+    """Redact a sheet title and make it Excel-valid: no forbidden chars, <= 31 chars."""
+    redacted = redact_text(title or "")
+    safe = "".join("-" if ch in _EXCEL_TITLE_FORBIDDEN else ch for ch in redacted)
+    return safe[:_EXCEL_TITLE_MAX] or "Sheet"
+
+
+def _dedupe_title(base: str, used_lower: set) -> str:
+    """Append -2, -3, ... inside the 31-char limit until the title is unique."""
+    candidate = base
+    n = 2
+    while candidate.lower() in used_lower:
+        suffix = f"-{n}"
+        candidate = base[:_EXCEL_TITLE_MAX - len(suffix)] + suffix
+        n += 1
+    used_lower.add(candidate.lower())
+    return candidate
+
+
+def _redact_sheet_titles(wb) -> int:
+    """Redact every sheet title; keep titles valid and unique. Returns titles changed.
+
+    openpyxl's title setter renames on collision (case-insensitively, against
+    every current sheet name, with no 31-char guard), so final titles are
+    computed first and assigned in two phases: park each sheet on a
+    placeholder outside the final set, then assign. Titles the redactor did
+    not change are reserved first so a PII-free sheet keeps its name.
+    """
+    sheets = list(wb.worksheets) + list(wb.chartsheets)
+    originals = [ws.title for ws in sheets]
+    bases = [_excel_safe_title(title) for title in originals]
+
+    used_lower: set = set()
+    finals = [None] * len(sheets)
+    for idx, (original, base) in enumerate(zip(originals, bases)):
+        if base == original:
+            finals[idx] = _dedupe_title(base, used_lower)
+    for idx, base in enumerate(bases):
+        if finals[idx] is None:
+            finals[idx] = _dedupe_title(base, used_lower)
+
+    for idx, ws in enumerate(sheets):
+        placeholder = f"fg-tmp-{idx}"
+        while placeholder.lower() in used_lower:
+            placeholder += "x"
+        ws.title = placeholder
+    changed = 0
+    for ws, original, final in zip(sheets, originals, finals):
+        ws.title = final
+        if final != original:
+            changed += 1
+    return changed
+
+
+def _redact_properties(wb) -> int:
+    """Run redact_text over the core document properties. Returns properties changed."""
+    props = wb.properties
+    changed = 0
+    for name in XLSX_CORE_PROPERTIES:
+        value = getattr(props, name, None)
+        if not isinstance(value, str) or not value:
+            continue
+        redacted = redact_text(value)
+        if redacted != value:
+            setattr(props, name, redacted)
+            changed += 1
+    return changed
+
+
+def _verify_no_comments(output_path: Path) -> None:
+    """Keep the output only when the container provably has no comment parts."""
+    status = xlsx_comment_status(output_path)
+    if status == "absent":
+        return
+    try:
+        Path(output_path).unlink()
+    except OSError:
+        pass
+    if status == "present":
+        raise RedactionVerificationError("Redaction could not remove all comments")
+    raise RedactionVerificationError("Redaction output could not be verified")
+
 
 def redact_xlsx(input_path: Path, output_path: Path) -> int:
-    """Redact an XLSX file cell by cell, preserving structure. Returns cell count."""
+    """Redact an XLSX file, preserving structure. Returns the number of cells changed.
+
+    Changes: string data cells redacted (header row skipped), every cell
+    comment removed (each counts as a changed cell), sheet titles redacted and
+    kept Excel-valid and unique, core properties redacted. Numeric cells are
+    left as they are, by design.
+
+    After saving, the output container is verified: it is kept only when no
+    comment part is present. Otherwise the file is deleted and
+    RedactionVerificationError is raised. Threaded comments do not survive
+    an openpyxl save, so the verification covers them too.
+    """
     try:
         import openpyxl
     except ImportError:
@@ -177,6 +284,9 @@ def redact_xlsx(input_path: Path, output_path: Path) -> int:
     for ws in wb.worksheets:
         for row_idx, row in enumerate(ws.iter_rows(), start=1):
             for cell in row:
+                if cell.comment is not None:
+                    cell.comment = None
+                    cell_count += 1
                 if cell.value is not None and isinstance(cell.value, str):
                     # Skip header row (row 1) -- column names are metadata
                     if row_idx == 1:
@@ -187,8 +297,12 @@ def redact_xlsx(input_path: Path, output_path: Path) -> int:
                         cell.value = redacted
                         cell_count += 1
 
+    _redact_sheet_titles(wb)
+    _redact_properties(wb)
+
     wb.save(output_path)
     wb.close()
+    _verify_no_comments(output_path)
     return cell_count
 
 
@@ -334,26 +448,32 @@ def main():
 
     output_path = _resolve_output_path(input_path)
 
-    if ext == ".xlsx":
-        count = redact_xlsx(input_path, output_path)
-        unit = "cells"
-    elif ext == ".csv":
-        count = redact_csv(input_path, output_path, delimiter=",")
-        unit = "rows"
-    elif ext == ".tsv":
-        count = redact_csv(input_path, output_path, delimiter="\t")
-        unit = "rows"
-    elif ext == ".json":
-        count = redact_json(input_path, output_path)
-        unit = "values"
-    elif ext == ".jsonl":
-        count = redact_jsonl(input_path, output_path)
-        unit = "lines"
-    else:
-        count = redact_text_file(input_path, output_path)
-        unit = "lines"
+    try:
+        if ext == ".xlsx":
+            count = redact_xlsx(input_path, output_path)
+            unit = "cells"
+        elif ext == ".csv":
+            count = redact_csv(input_path, output_path, delimiter=",")
+            unit = "rows"
+        elif ext == ".tsv":
+            count = redact_csv(input_path, output_path, delimiter="\t")
+            unit = "rows"
+        elif ext == ".json":
+            count = redact_json(input_path, output_path)
+            unit = "values"
+        elif ext == ".jsonl":
+            count = redact_jsonl(input_path, output_path)
+            unit = "lines"
+        else:
+            count = redact_text_file(input_path, output_path)
+            unit = "lines"
+    except RedactionVerificationError as exc:
+        print(f"Error: {exc}; no output written.")
+        sys.exit(1)
 
     print(f"Redacted {count} {unit} -> {output_path}")
+    if ext == ".xlsx":
+        print("Numeric cells, names, and free text are not changed; see README, Redaction.")
 
 
 if __name__ == "__main__":
