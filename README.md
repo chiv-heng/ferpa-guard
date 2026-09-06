@@ -89,7 +89,8 @@ The hook is a PreToolUse hook in Claude Code. It can only see the tool calls lis
 
 - `Read` of a file with a scannable extension (csv, tsv, txt, json, jsonl, xml, sql, log, dat, xls, xlsx, pdf, docx, md, html, htm).
 - `Bash` commands that read file content (`cat`, `head`, `grep`, `sed`, `awk`, interpreters given a literal data-file operand, and unknown commands), including every part of a compound command such as `ls ; cat roster.csv`. Metadata-only commands (`ls`, `wc`, `stat`, `mv`, `cp`, `tee`) are not scanned.
-- `Grep` with `output_mode: "content"` on a single file, scanned like a Read. On a directory it is **denied** unless the directory provably holds no scannable file or the `glob` names a single code extension such as `*.py`; the default output mode (file names only) and `count` are allowed.
+- `Grep` with `output_mode: "content"` on a single file, scanned like a Read. On a directory it is **denied** unless the directory provably holds no scannable file, the `glob` is exactly one code extension such as `*.py`, or the directory is allowlisted; the default output mode (file names only) and `count` are allowed.
+- Command substitutions inside a Bash command (`ls $(cat roster.csv)`) are scanned as commands in their own right, whatever the outer command is, and an input redirection on a loop or block (`done < roster.csv`) is a read.
 - Files the scanner cannot read fully (missing library, corrupt, encrypted, past a scan limit, or an xlsx workbook that has cell comments) are held as unscannable, not treated as clean.
 
 **Not gated, by name**
@@ -99,7 +100,7 @@ The hook is a PreToolUse hook in Claude Code. It can only see the tool calls lis
 - Shell variable indirection (`f=roster.csv; cat "$f"`) and paths built at runtime. Only literal operands are seen.
 - Files without a scannable extension, including extensionless copies and `.bak` files.
 - Any tool not in the matcher.
-- Paths on an allowlist are not scanned at all. Medium-severity findings (email, phone, street address) warn and never deny. `FERPA_GUARD_STRICT=1` escalates every finding to a denial.
+- Paths on an allowlist are not scanned at all, and a content-mode Grep over an allowlisted directory is allowed. Directories the scanner exempts by name (`.git`, `node_modules`, `.claude`, `.planning`, `__pycache__`, and the rest of its skip list) are exempt for Grep as well, so keep student data out of them. Medium-severity findings (email, phone, street address) warn and never deny. `FERPA_GUARD_STRICT=1` escalates every finding to a denial.
 
 Treat this list as the control's edge. Anything outside it is covered by policy and training, not by this tool.
 

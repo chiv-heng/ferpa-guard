@@ -448,6 +448,72 @@ class TestGrepHookEndToEnd(unittest.TestCase):
         self.assertEqual(0, r.returncode, r.stderr)
 
 
+class TestReviewFindings2026_09_06(unittest.TestCase):
+    """Defects confirmed from the Phase 0 multi-model review (Ringer run
+    ferpa-phase0-eval): each was probed against the code before this test
+    was written."""
+
+    def paths(self, cmd):
+        return pg_hook.extract_file_paths("Bash", {"command": cmd})
+
+    def test_case_clause_named_like_metadata_command(self):
+        # A clause pattern such as `file)` or `ls)` must not classify the clause body.
+        self.assertIn("/d/r.csv", self.paths("case $x in init) ls ;; file) cat /d/r.csv ;; esac"))
+        self.assertIn("/d/r.csv", self.paths("case $x in a) wc -l x ;; ls) cat /d/r.csv ;; esac"))
+        self.assertIn("/d/r.csv", self.paths("(ls; cat /d/r.csv)"))
+
+    def test_input_redirect_on_block_closing_keyword(self):
+        self.assertIn("/d/r.csv", self.paths('while read -r l; do echo "$l"; done < /d/r.csv'))
+        self.assertIn("/d/r.csv", self.paths("if true; then cat; fi < /d/r.csv"))
+        self.assertEqual([], self.paths("done"))
+
+    def test_metadata_command_wrapping_substitution(self):
+        self.assertIn("/d/r.csv", self.paths("ls -la $(cat /d/r.csv)"))
+        self.assertIn("/d/r.csv", self.paths("wc -l `cat /d/r.csv`"))
+        self.assertIn("/d/r.csv", self.paths("stat $(head -1 /d/r.csv)"))
+        # Single quotes suppress substitution, so nothing is recursed into.
+        # (The outer segment's regexes may still over-extract the literal,
+        # which is the conservative side and unchanged from before.)
+        self.assertEqual([], pg_hook._substitution_bodies("echo '$(cat /d/r.csv)'"))
+        self.assertEqual(["cat /d/r.csv"], pg_hook._substitution_bodies('echo "$(cat /d/r.csv)"'))
+        self.assertEqual(["cat a.csv"], pg_hook._substitution_bodies("wc -l `cat a.csv`"))
+
+    def test_substitution_inside_double_quotes_has_no_trailing_paren(self):
+        got = self.paths('echo "$(cat /d/r.csv)"')
+        self.assertIn("/d/r.csv", got)
+        self.assertFalse(any(p.endswith(")") for p in got), got)
+
+    def test_heredoc_produces_no_junk_operands(self):
+        got = self.paths("cat <<EOF /d/r.csv")
+        self.assertIn("/d/r.csv", got)
+        self.assertFalse(any(p.startswith("<") for p in got), got)
+
+    def test_shortcut_a_glob_is_matched_exactly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "a.csv").write_text("x\n")
+            base = {"pattern": ".", "output_mode": "content", "path": tmp}
+            self.assertEqual("allow", pg_hook.grep_directory_verdict(tmp, {**base, "glob": "*.py"}))
+            self.assertEqual("deny", pg_hook.grep_directory_verdict(tmp, {**base, "glob": " *.py "}))
+            self.assertEqual("deny", pg_hook.grep_directory_verdict(tmp, {**base, "glob": "*.py "}))
+
+    def test_allowlisted_directory_permits_content_grep(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            home.mkdir()
+            data = Path(tmp) / "data"
+            data.mkdir()
+            (data / "roster.csv").write_text(BLOCKING_CSV)
+            inp = {"pattern": "x", "path": str(data), "output_mode": "content"}
+            denied = run_hook("Grep", inp, home=str(home))
+            self.assertEqual(2, denied.returncode, denied.stderr)
+            allowed = run_hook("Grep", inp, home=str(home), env_extra={"FERPA_GUARD_ALLOW": str(data)})
+            self.assertEqual(0, allowed.returncode, allowed.stderr)
+            self.assertIn("bypass", allowed.stderr)
+            log = home / ".claude" / "logs" / "ferpa-guard-audit.jsonl"
+            recs = [json.loads(l) for l in log.read_text().splitlines() if l.strip()]
+            self.assertTrue(any(r.get("action") == "bypass" for r in recs), recs)
+
+
 class TestOperationalMessageForComments(unittest.TestCase):
     """XLSX_COMMENTS messaging: recovery names comment removal only when the
     workbook could be opened; an open failure keeps its own guidance and the

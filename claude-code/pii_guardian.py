@@ -174,7 +174,7 @@ def _load_disk_cache() -> None:
         return
     try:
         data = json.loads(_DISK_CACHE_PATH.read_text())
-        # Wire format v3: {"version": 3, "entries": [...]}. Anything else is
+        # Wire format v4: {"version": 4, "entries": [...]}. Anything else is
         # ignored wholesale (cold cache, never migrated) because older
         # versions may contain fail-open reader verdicts.
         if not isinstance(data, dict) or data.get("version") != _CACHE_VERSION:
@@ -364,7 +364,13 @@ def _split_shell_segments(cmd: str) -> list[str]:
             flush()                    # background '&'
             i += 1
             continue
-        if c in "(){}":
+        if c in "()":
+            # Subshell grouping and `case` clause patterns (`word)`): a
+            # separator, so `file) cat x.csv` never classifies as `file`.
+            flush()
+            i += 1
+            continue
+        if c in "{}":
             buf.append(" ")
             i += 1
             continue
@@ -373,6 +379,52 @@ def _split_shell_segments(cmd: str) -> list[str]:
 
     flush()
     return segments
+
+
+def _substitution_bodies(segment: str) -> list[str]:
+    """Return the command text inside every `$(...)` and backtick substitution
+    in a segment (outside single quotes, where no substitution happens). The
+    shell runs these as commands whatever the outer command is, so
+    `ls $(cat roster.csv)` still reads the roster."""
+    bodies: list[str] = []
+    i, n = 0, len(segment)
+    in_single = False
+    while i < n:
+        c = segment[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == "'":
+            in_single = not in_single
+            i += 1
+            continue
+        if in_single:
+            i += 1
+            continue
+        if c == "$" and i + 1 < n and segment[i + 1] == "(":
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if segment[j] == "\\":
+                    j += 2
+                    continue
+                if segment[j] == "(":
+                    depth += 1
+                elif segment[j] == ")":
+                    depth -= 1
+                j += 1
+            bodies.append(segment[i + 2:j - 1] if depth == 0 else segment[i + 2:])
+            i = j
+            continue
+        if c == "`":
+            j = segment.find("`", i + 1)
+            if j == -1:
+                bodies.append(segment[i + 1:])
+                break
+            bodies.append(segment[i + 1:j])
+            i = j + 1
+            continue
+        i += 1
+    return bodies
 
 
 def _segment_command_name(segment: str) -> str:
@@ -400,6 +452,24 @@ def _segment_command_name(segment: str) -> str:
     return token
 
 
+# An input redirection (`< file`), excluding heredocs (`<<`) and descriptor
+# duplication (`<&`).
+_INPUT_REDIRECT = re.compile(r"(?<![<>])<(?![<&])")
+
+
+def _segment_is_content(segment: str) -> bool:
+    """Classify one simple-command segment.
+
+    Pure shell syntax (`done`, `fi`, `esac` ...) is not a command, except
+    that a block-closing keyword carrying an input redirection
+    (`done < roster.csv`) feeds that file to the whole block and is a read.
+    """
+    name = _segment_command_name(segment)
+    if name in _SHELL_NOOP_TOKENS:
+        return bool(_INPUT_REDIRECT.search(segment))
+    return name not in _METADATA_COMMANDS
+
+
 def _is_content_command(cmd: str) -> bool:
     """Return True if ANY segment of the Bash command reads file content.
 
@@ -408,18 +478,7 @@ def _is_content_command(cmd: str) -> bool:
     wc, mv, ...) return False; content commands and unknown commands return
     True (scan conservatively).
     """
-    for segment in _split_shell_segments(cmd):
-        name = _segment_command_name(segment)
-        if name in _SHELL_NOOP_TOKENS:
-            continue
-        if name not in _METADATA_COMMANDS:
-            return True
-    return False
-
-
-def _segment_is_content(segment: str) -> bool:
-    name = _segment_command_name(segment)
-    return name not in _SHELL_NOOP_TOKENS and name not in _METADATA_COMMANDS
+    return any(_segment_is_content(s) for s in _split_shell_segments(cmd))
 
 
 _DATA_EXTS = "|".join(e.lstrip(".") for e in SCANNABLE_EXTENSIONS)
@@ -433,30 +492,33 @@ def _extract_bash_segment_paths(segment: str) -> list[str]:
     # Extract paths from common file-reading commands. A quoted operand is
     # taken whole (paths with spaces), an unquoted one up to the next
     # separator; no phantom prefix path is produced for quoted operands.
+    # Operand character classes exclude `)` (a substitution or clause
+    # boundary) and `<` (a heredoc or redirect operator) so no phantom
+    # operand such as `/d/r.csv)` or `<<EOF` is produced.
     reading_cmds = r"(?:cat|head|tail|less|more|bat)\s+"
     for dq, sq, bare in re.findall(
-        rf"{reading_cmds}(?:-\S+\s+)*(?:\"([^\"]+)\"|'([^']+)'|([^\s\"'|;>]+))", segment
+        rf"{reading_cmds}(?:-\S+\s+)*(?:\"([^\"]+)\"|'([^']+)'|([^\s\"'|;><()]+))", segment
     ):
         paths.append(dq or sq or bare)
 
     # Processing commands (grep, sed, awk, sort, cut, etc.)
     processing_cmds = r"(?:grep|egrep|fgrep|sed|awk|sort|cut|diff|comm|paste|join|uniq|tr)\s+"
     paths.extend(re.findall(
-        rf"{processing_cmds}(?:-\S+\s+)*(?:\"[^\"]*\"\s+|'[^']*'\s+)*[\"']?([^\s\"'|;>]+\.(?:{data_exts}))[\"']?",
+        rf"{processing_cmds}(?:-\S+\s+)*(?:\"[^\"]*\"\s+|'[^']*'\s+)*[\"']?([^\s\"'|;>()]+\.(?:{data_exts}))[\"']?",
         segment,
     ))
 
     # Catch explicit file paths in quoted strings for data extensions
     paths.extend(re.findall(rf"[\"']([^\"']+\.(?:{data_exts}))[\"']", segment))
 
-    # Input redirects (< file.csv) -- NOT output redirects (>, >>), and not
-    # the '<&' descriptor-duplication form.
-    paths.extend(re.findall(r"<(?!&)\s*[\"']?([^\s\"'|;>&]+)", segment))
+    # Input redirects (< file.csv) -- NOT output redirects (>, >>), not the
+    # '<&' descriptor-duplication form, and not a heredoc ('<<').
+    paths.extend(re.findall(r"(?<![<>])<(?![<&])\s*[\"']?([^\s\"'|;>&<()]+)", segment))
 
     # Bare unquoted data files (paths with data extensions anywhere in command)
     # Exclude output redirect targets by requiring no preceding > or >>
     paths.extend(re.findall(
-        rf"(?<!>\s)(?<!\S)([^\s\"'|;><]+\.(?:{data_exts}))(?=\s|$|[|;>])",
+        rf"(?<!>\s)(?<!\S)([^\s\"'|;><()]+\.(?:{data_exts}))(?=\s|$|[|;>)])",
         segment,
     ))
     return paths
@@ -555,7 +617,7 @@ def grep_directory_verdict(scope: str, tool_input: dict) -> str:
     glob = tool_input.get("glob")
     ftype = tool_input.get("type")
     if glob and not ftype:
-        m = _SINGLE_EXT_GLOB.match(glob.strip())
+        m = _SINGLE_EXT_GLOB.match(glob)  # exact match; whitespace is not stripped (spec 2.2)
         if m and ("." + m.group(1).lower()) not in SCANNABLE_EXTENSIONS:
             return "allow"
 
@@ -564,7 +626,10 @@ def grep_directory_verdict(scope: str, tool_input: dict) -> str:
     return "deny"
 
 
-def extract_file_paths(tool_name: str, tool_input: dict) -> list[str]:
+_MAX_SUBSTITUTION_DEPTH = 3
+
+
+def extract_file_paths(tool_name: str, tool_input: dict, _depth: int = 0) -> list[str]:
     """Pull file paths from tool input depending on tool type."""
     paths = []
 
@@ -582,6 +647,12 @@ def extract_file_paths(tool_name: str, tool_input: dict) -> list[str]:
         for segment in _split_shell_segments(cmd):
             if _segment_is_content(segment):
                 paths.extend(_extract_bash_segment_paths(segment))
+            # Command substitutions run regardless of the outer command:
+            # `ls $(cat roster.csv)` reads the roster. Recurse into each body
+            # as its own command line, bounded in depth.
+            if _depth < _MAX_SUBSTITUTION_DEPTH:
+                for body in _substitution_bodies(segment):
+                    paths.extend(extract_file_paths("Bash", {"command": body}, _depth + 1))
 
     elif tool_name == "Grep":
         # Only output_mode "content" returns matching lines to the model;
@@ -916,6 +987,68 @@ def output_deny(reason: str):
 # Main
 # ---------------------------------------------------------------------------
 
+def _load_allowlists() -> tuple[dict, dict, set]:
+    """Load allowlist sources, pattern-level skips, and global skips.
+
+    Sources: FERPA_GUARD_ALLOW (comma-separated paths), the user allowlist
+    file ~/.claude/ferpa-guard-allow.txt (one path per line, optional
+    `SKIP:PATTERN,...` suffix for pattern-level skips), and
+    FERPA_GUARD_SKIP_PATTERNS. All paths are resolved so comparisons are
+    canonical. Read on every invocation so edits take effect immediately.
+    """
+    allowlist_sources: dict[str, str] = {}
+    path_skip_patterns: dict[str, set] = {}
+    global_skip_patterns: set = set()
+
+    for p in os.environ.get("FERPA_GUARD_ALLOW", "").split(","):
+        p = p.strip()
+        if p:
+            allowlist_sources[str(Path(p).resolve())] = "env(FERPA_GUARD_ALLOW)"
+
+    for pat in os.environ.get("FERPA_GUARD_SKIP_PATTERNS", "").split(","):
+        pat = pat.strip()
+        if pat:
+            global_skip_patterns.add(pat)
+
+    allowlist_file = Path.home() / ".claude" / "ferpa-guard-allow.txt"
+    if allowlist_file.is_file():
+        try:
+            for line in allowlist_file.read_text().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    skip_match = re.match(r'^(.+?)\s+SKIP:(.+)$', line)
+                    if skip_match:
+                        entry_path = skip_match.group(1).strip()
+                        skip_names = {s.strip() for s in skip_match.group(2).split(",")}
+                        resolved_entry = str(Path(entry_path).resolve())
+                        path_skip_patterns[resolved_entry] = skip_names
+                        allowlist_sources.setdefault(resolved_entry, f"file({allowlist_file})")
+                    else:
+                        allowlist_sources[str(Path(line).resolve())] = f"file({allowlist_file})"
+        except OSError:
+            pass
+    return allowlist_sources, path_skip_patterns, global_skip_patterns
+
+
+def _full_bypass_source(resolved: str, allowlist_sources: dict, path_skip_patterns: dict):
+    """Return the allowlist source that fully bypasses `resolved`, or None.
+
+    Exact path or directory-prefix match against full-bypass entries (SKIP
+    entries are pattern-level, not bypasses), then the ancestor-walk
+    `.pii-guardian-allow` file.
+    """
+    for a in allowlist_sources:
+        if a in path_skip_patterns:
+            continue
+        if resolved == a or resolved.startswith(a.rstrip("/") + "/"):
+            return allowlist_sources[a]
+    allowfile_entries = collect_allowfile_entries(resolved)
+    for a in allowfile_entries:
+        if resolved == a or resolved.startswith(a.rstrip("/") + "/"):
+            return f"allowfile({allowfile_entries[a]})"
+    return None
+
+
 def main():
     # Read hook input from stdin (Claude Code hooks API)
     try:
@@ -957,10 +1090,20 @@ def main():
 
     file_paths = extract_file_paths(tool_name, tool_input)
 
+    # Allowlists (env, user file, ancestor allowfile). Loaded before the Grep
+    # directory verdict so an allowlisted directory permits a content-mode
+    # search, consistent with "allowlisted paths are not scanned".
+    allowlist_sources, path_skip_patterns, global_skip_patterns = _load_allowlists()
+
     # Content-mode Grep over a directory: deny-and-narrow unless provably
     # safe (spec 2.2). Never expanded into per-file scans.
     if tool_name == "Grep" and tool_input.get("output_mode") == "content" and not file_paths:
         scope = grep_scope(tool_input)
+        resolved_scope = str(Path(scope).resolve())
+        bypass = _full_bypass_source(resolved_scope, allowlist_sources, path_skip_patterns)
+        if bypass is not None:
+            _write_audit_entry(scope, resolved_scope, bypass)
+            output_allow()
         if grep_directory_verdict(scope, tool_input) == "deny":
             write_audit_event(AUDIT_LOG_PATH, "block", scope, ["GREP_SCOPE"])
             output_deny(_GREP_SCOPE_REASON)
@@ -971,55 +1114,6 @@ def main():
 
     # Load disk cache if enabled
     _load_disk_cache()
-
-    # Load allowlist from environment variable and/or allowlist file.
-    # The file-based allowlist (~/.claude/ferpa-guard-allow.txt) lets users
-    # add entries from within a conversation without restarting the session.
-    # All paths are resolved at load time so both sides of comparison are canonical.
-    #
-    # Pattern-level skip syntax (allowlist file):
-    #   /path/to/file.xlsx SKIP:SSN,SSN_NO_DASHES
-    #   /path/to/directory/ SKIP:MEDICAL_INFO
-    #
-    # Global pattern suppression (env var):
-    #   FERPA_GUARD_SKIP_PATTERNS=SSN,SSN_NO_DASHES
-    allowlist_sources: dict[str, str] = {}
-    # Maps resolved path -> set of pattern names to skip for that path
-    path_skip_patterns: dict[str, set] = {}
-
-    allowlist_raw = os.environ.get("FERPA_GUARD_ALLOW", "")
-    for p in allowlist_raw.split(","):
-        p = p.strip()
-        if p:
-            allowlist_sources[str(Path(p).resolve())] = "env(FERPA_GUARD_ALLOW)"
-
-    # Global pattern suppression via env var
-    global_skip_patterns: set = set()
-    skip_env = os.environ.get("FERPA_GUARD_SKIP_PATTERNS", "")
-    for pat in skip_env.split(","):
-        pat = pat.strip()
-        if pat:
-            global_skip_patterns.add(pat)
-
-    allowlist_file = Path.home() / ".claude" / "ferpa-guard-allow.txt"
-    if allowlist_file.is_file():
-        try:
-            for line in allowlist_file.read_text().splitlines():
-                line = line.strip()
-                if line and not line.startswith("#"):
-                    # Parse pattern-level skip: "/path/to/file SKIP:SSN,DOB"
-                    skip_match = re.match(r'^(.+?)\s+SKIP:(.+)$', line)
-                    if skip_match:
-                        entry_path = skip_match.group(1).strip()
-                        skip_names = {s.strip() for s in skip_match.group(2).split(",")}
-                        resolved_entry = str(Path(entry_path).resolve())
-                        path_skip_patterns[resolved_entry] = skip_names
-                        # Source tracking for audit log
-                        allowlist_sources.setdefault(resolved_entry, f"file({allowlist_file})")
-                    else:
-                        allowlist_sources[str(Path(line).resolve())] = f"file({allowlist_file})"
-        except OSError:
-            pass
 
     # Strict mode: block on ANY finding (restores pre-confidence behavior)
     strict_mode = bool(os.environ.get("FERPA_GUARD_STRICT"))
