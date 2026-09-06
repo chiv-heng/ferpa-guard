@@ -147,6 +147,14 @@ export FERPA_GUARD_ALLOW="/path/to/safe-template.csv,/path/to/other.json"
 
 Every decision — blocks, warnings, log notes, and allowlist bypasses — is recorded as JSON lines in `~/.claude/logs/ferpa-guard-audit.jsonl` for FERPA compliance. Records carry pattern names only, never the matched values.
 
+## Hard-deny directories (optional)
+
+Some directories must never reach the model, whatever they contain. List them in `FERPA_GUARD_HARD_DENY` (separated by `:` on macOS and Linux). Every Read and every Bash operand under those directories is denied before any allowlist, cache, or scan runs, including metadata commands like `ls` and `wc`. The denial message never echoes the path. Edit calls are also denied under these roots when the hook matcher includes Edit (the default installer matcher is Read and Bash only).
+
+```bash
+export FERPA_GUARD_HARD_DENY="$HOME/.local/share/private-control:/srv/protected"
+```
+
 ## Project structure
 
 ```

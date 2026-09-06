@@ -605,12 +605,18 @@ class TestHookProtocol(unittest.TestCase):
 class TestPrivateControlHardDeny(unittest.TestCase):
     """Protected control paths are denied before every bypass or reader."""
 
-    ROOT = Path("/Users/chivheng/.local/share/spreadsheet-assurance/private-control")
+    ROOT = Path("/opt/ferpa-guard-tests/private-control")
     REASON = "Access to protected private control data is denied."
+
+    def setUp(self):
+        patcher = mock.patch.object(pg_hook, "HARD_DENY_ROOTS", (self.ROOT,))
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def _run_hook(self, tool_name, tool_input, env_extra=None):
         payload = json.dumps({"tool_name": tool_name, "tool_input": tool_input})
         env = os.environ.copy()
+        env["FERPA_GUARD_HARD_DENY"] = str(self.ROOT)
         if env_extra:
             env.update(env_extra)
         return subprocess.run(
@@ -636,6 +642,26 @@ class TestPrivateControlHardDeny(unittest.TestCase):
         self.assertEqual(self.REASON, result.stderr.strip())
         self.assertNotIn(str(self.ROOT), result.stdout + result.stderr)
         self.assertNotIn(str(requested_path), result.stdout + result.stderr)
+
+    def test_roots_load_from_env_var(self):
+        joined = os.pathsep.join([" /opt/a/control ", "", "~/b/control"])
+        with mock.patch.dict(os.environ, {"FERPA_GUARD_HARD_DENY": joined}):
+            roots = pg_hook._load_hard_deny_roots()
+        self.assertEqual((Path("/opt/a/control"), Path.home() / "b" / "control"), roots)
+        with mock.patch.dict(os.environ, {"FERPA_GUARD_HARD_DENY": ""}):
+            self.assertEqual((), pg_hook._load_hard_deny_roots())
+        env = {k: v for k, v in os.environ.items() if k != "FERPA_GUARD_HARD_DENY"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual((), pg_hook._load_hard_deny_roots())
+
+    def test_unset_env_var_denies_nothing_in_subprocess(self):
+        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": f"ls {self.ROOT}"}})
+        env = {k: v for k, v in os.environ.items() if k != "FERPA_GUARD_HARD_DENY"}
+        result = subprocess.run(
+            [sys.executable, TestHookProtocol.SCRIPT],
+            input=payload, capture_output=True, text=True, env=env,
+        )
+        self.assertEqual(0, result.returncode)
 
     def test_exact_root_and_descendant_are_denied_component_safely(self):
         self.assertTrue(pg_hook.path_is_hard_denied(self.ROOT))

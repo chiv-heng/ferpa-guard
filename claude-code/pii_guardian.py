@@ -50,9 +50,23 @@ from shared.pii_engine import (
 AUDIT_LOG_PATH = Path.home() / ".claude" / "logs" / "ferpa-guard-audit.jsonl"
 FEEDBACK_LOG_PATH = Path.home() / ".claude" / "ferpa-guard-feedback.log"
 
-HARD_DENY_ROOTS = (
-    Path("/Users/chivheng/.local/share/spreadsheet-assurance/private-control"),
-)
+def _load_hard_deny_roots() -> tuple[Path, ...]:
+    """Read FERPA_GUARD_HARD_DENY: os.pathsep-separated directories that are
+    always denied, before any allowlist, cache, reader, or scan runs.
+
+    Empty by default. Set it in the shell profile or the hook's env block for
+    directories that must never reach the model regardless of content.
+    """
+    raw = os.environ.get("FERPA_GUARD_HARD_DENY", "")
+    roots = []
+    for entry in raw.split(os.pathsep):
+        entry = entry.strip()
+        if entry:
+            roots.append(Path(os.path.expanduser(entry)))
+    return tuple(roots)
+
+
+HARD_DENY_ROOTS = _load_hard_deny_roots()
 _HARD_DENY_REASON = "Access to protected private control data is denied."
 
 
@@ -604,17 +618,21 @@ def main():
     tool_name = hook_input.get("tool_name", "")
     tool_input = hook_input.get("tool_input", {})
 
+    # Hard-deny roots are a directory boundary, not a content scan: they apply
+    # to every tool the hook is invoked for, Edit included, and run before the
+    # content gate below. (The installer matcher is Read|Bash, so Edit only
+    # reaches this check if a settings.json matcher also lists Edit.)
+    hard_deny_candidates = extract_hard_deny_candidates(tool_name, tool_input)
+
+    if any(path_is_hard_denied(Path(candidate)) for candidate in hard_deny_candidates):
+        output_deny(_HARD_DENY_REASON)
+
     # Guard the tools that pull file CONTENT into the model's context. Read
     # does; Bash does (cat, grep, head). Edit does not: it pushes content the
     # model already holds, and gating it blocked editing out an offending
     # token -- the guard blocked its own remediation (live parity, spec Q6).
     if tool_name not in ("Read", "Bash"):
         output_allow()
-
-    hard_deny_candidates = extract_hard_deny_candidates(tool_name, tool_input)
-
-    if any(path_is_hard_denied(Path(candidate)) for candidate in hard_deny_candidates):
-        output_deny(_HARD_DENY_REASON)
 
     file_paths = extract_file_paths(tool_name, tool_input)
 
