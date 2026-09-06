@@ -167,14 +167,20 @@ Registered at user level in `~/.claude/settings.json`:
 - **Per-pattern context:** Set `context_keywords` on a pattern to require specific keywords
 - **Default context:** Set `min_context: True` without `context_keywords` to use the default education keyword set
 - **Change scanned extensions:** Edit `SCANNABLE_EXTENSIONS` set
-- **Performance:** Text files scan max 2 MB. xlsx files scan max 50,000 cells. Adjust constants if needed.
+- **Performance:** Text files are read whole up to 32 million characters; xlsx files scan up to 50,000 cells; PDFs up to 50 pages. Past a limit, or when a file cannot be read, the file is held as unscannable rather than treated as clean. Adjust constants if needed.
 
 ## Legal Context
 
-K-12 education records are protected under federal law (20 U.S.C. 1232g).
-Disclosure requires written consent from the family or eligible person.
-This hook helps enforce that boundary by catching PII before it enters the
-Claude context window.
+K-12 education records are protected under FERPA (20 U.S.C. 1232g). FERPA
+generally requires written consent before disclosing personally identifiable
+information from education records unless an exception applies. This hook
+cannot determine whether an exception applies, whether a vendor agreement
+meets the school-official exception, or whether an output is de-identified;
+those are decisions for the district, with counsel. For supported tool calls
+and files, the hook denies access when scanning produces a block-level
+finding; detection limits, exemptions, and warning-only outcomes still apply.
+Student-record protection is distinct from staff confidentiality (HR data,
+credentials), which this hook does not cover.
 
 ## Disclaimer
 

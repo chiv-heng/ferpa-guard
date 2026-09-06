@@ -1,6 +1,6 @@
 # FERPA Guard
 
-K-12 AI safety layer that detects and blocks student PII before it enters LLM context windows. Protects against accidental FERPA/COPPA violations across AI tools teachers and school staff already use.
+K-12 AI safety layer that detects student PII in files before an AI tool reads them. For supported tool calls and files, the hook denies access when scanning produces a block-level finding; detection limits, exemptions, and warning-only outcomes still apply. It reduces accidental FERPA/COPPA disclosures across AI tools teachers and school staff already use; it does not establish compliance.
 
 ## Project Structure
 
@@ -82,8 +82,8 @@ Install as a Claude Code hook (project-scoped recommended):
 
 ## Recovery Model
 
-When PII is detected, the tool:
-1. Blocks access to the file/content
+When scanning produces a block-level finding, the tool:
+1. Denies access to the file/content (medium-severity findings warn and the read proceeds; `FERPA_GUARD_STRICT=1` escalates every finding)
 2. Lists what was found, grouped by severity
 3. Offers numbered alternatives appropriate to the surface:
    - Generate synthetic data with the same structure

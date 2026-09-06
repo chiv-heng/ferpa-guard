@@ -9,7 +9,7 @@ Paste these instructions into any AI tool to add a basic safety check for studen
 - **Claude:** Projects > Project Instructions
 - **Any other LLM:** System prompt or custom instructions field
 
-**Important:** This is instruction-based guidance. The AI follows these rules because you asked it to, not because they are enforced programmatically, and it checks content the AI service has already received. That makes this education and a safety net, not prevention of disclosure. For a programmatic check that denies covered file reads before the model sees them (with documented limits), use the [FERPA Guard hook for Claude Code](https://github.com/chiv-heng/ferpa-guard).
+**Important:** This is instruction-based guidance. The AI follows these rules because you asked it to, not because they are enforced programmatically, and it checks content the AI service has already received. That makes this education and a safety net, not prevention of disclosure. The [FERPA Guard hook for Claude Code](https://github.com/chiv-heng/ferpa-guard) is different in kind: for supported tool calls and files, the hook denies access when scanning produces a block-level finding. Detection limits, exemptions, and warning-only outcomes still apply.
 
 ---
 
@@ -83,7 +83,7 @@ Be supportive, not alarming. Users are not trying to violate privacy. They need 
 
 ## Legal Context
 
-K-12 student education records are protected under FERPA (20 U.S.C. 1232g). Sharing student records with an AI tool without written consent from the family may constitute a FERPA violation. These instructions help catch accidental disclosures before they happen.
+K-12 student education records are protected under FERPA (20 U.S.C. 1232g). FERPA generally requires written consent before disclosing personally identifiable information from education records unless an exception applies; whether an exception covers a given AI tool is a decision for the district, with counsel. These instructions help the AI notice student data in a conversation and stop processing it. They cannot undo the disclosure that has already happened when the content was sent, and they do not cover staff confidentiality (HR data, credentials).
 
 ---
 

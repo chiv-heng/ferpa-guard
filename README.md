@@ -116,8 +116,8 @@ Context-aware gating reduces false positives: education-specific patterns only f
 
 ## Recovery model
 
-When PII is detected, the tool:
-1. Blocks access to the file
+When scanning produces a block-level finding, the tool:
+1. Denies access to the file (medium-severity findings such as email, phone, or street address warn instead and the read proceeds)
 2. Lists what was found, grouped by severity and confidence
 3. Offers numbered alternatives:
    - **Option 1:** Generate synthetic data with the same structure
@@ -141,9 +141,9 @@ python3 shared/pii_redactor.py /path/to/file.csv
 **Excel workbooks** (.xlsx):
 ```bash
 python3 shared/pii_redactor.py /path/to/file.xlsx
-# Or redact all xlsx files in a folder:
-python3 shared/pii_redactor.py /path/to/folder/
 ```
+
+The redactor takes one file per invocation; loop in the shell to redact a folder.
 
 ## Batch scanning
 
@@ -174,7 +174,7 @@ Every decision — blocks, warnings, log notes, and allowlist bypasses — is re
 
 ## Hard-deny directories (optional)
 
-Some directories must never reach the model, whatever they contain. List them in `FERPA_GUARD_HARD_DENY` (separated by `:` on macOS and Linux). Every Read and every Bash operand under those directories is denied before any allowlist, cache, or scan runs, including metadata commands like `ls` and `wc`. The denial message never echoes the path. Edit calls are also denied under these roots when the hook matcher includes Edit (the default installer matcher is Read and Bash only).
+Some directories must never reach the model, whatever they contain. List them in `FERPA_GUARD_HARD_DENY` (separated by `:` on macOS and Linux). Every Read and every Bash operand under those directories is denied before any allowlist, cache, or scan runs, including metadata commands like `ls` and `wc`. The denial message never echoes the path. Edit calls are also denied under these roots when the hook matcher includes Edit (the default installer matcher is Read, Bash, and Grep).
 
 ```bash
 export FERPA_GUARD_HARD_DENY="$HOME/.local/share/private-control:/srv/protected"
