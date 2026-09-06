@@ -91,7 +91,10 @@ import sys, json, os
 
 settings_path = sys.argv[1]
 hook_command = "python3 \"$HOME/.claude/skills/ferpa-guard/scripts/pii_guardian.py\""
-hook_matcher = "Read|Bash"
+# Read and Bash pull file content into context; Grep does in output_mode
+# "content". Edit and Write are allow-by-design (they push content the model
+# already holds). Reinstalls reconcile older matchers (Read|Bash, Read|Bash|Edit).
+hook_matcher = "Read|Bash|Grep"
 hook_entry = {
     "matcher": hook_matcher,
     "hooks": [{"type": "command", "command": hook_command}]
@@ -117,7 +120,7 @@ if not ours:
         json.dump(settings, f, indent=2)
     print(f"  [ok] Hook registered in {settings_path}")
 elif any(h.get("matcher") != hook_matcher for h in ours):
-    # Reconcile a stale matcher from an earlier install (e.g. Read|Bash|Edit)
+    # Reconcile a stale matcher from an earlier install (Read|Bash or Read|Bash|Edit)
     for h in ours:
         h["matcher"] = hook_matcher
     with open(settings_path, "w") as f:

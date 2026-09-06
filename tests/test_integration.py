@@ -240,8 +240,10 @@ class TestInstallScript(unittest.TestCase):
         )
         return result, fake_home
 
-    def test_fresh_install_registers_read_bash_matcher(self):
-        """A fresh install registers the Read|Bash matcher (no Edit)."""
+    EXPECTED_MATCHER = "Read|Bash|Grep"
+
+    def test_fresh_install_registers_read_bash_grep_matcher(self):
+        """A fresh install registers the Read|Bash|Grep matcher (no Edit, no Write)."""
         result, fake_home = self._run_install()
         try:
             self.assertEqual(result.returncode, 0, f"install.sh failed:\n{result.stderr}")
@@ -252,14 +254,13 @@ class TestInstallScript(unittest.TestCase):
                 h.get("matcher") for h in settings["hooks"]["PreToolUse"]
                 if any("ferpa-guard" in hk.get("command", "") for hk in h.get("hooks", []))
             ]
-            self.assertEqual(matchers, ["Read|Bash"])
+            self.assertEqual(matchers, [self.EXPECTED_MATCHER])
         finally:
             shutil.rmtree(fake_home)
 
-    def test_reinstall_reconciles_stale_matcher(self):
-        """Reinstalling over a settings.json whose ferpa-guard entry carries a
-        stale matcher (Read|Bash|Edit) updates the matcher in place -- no
-        duplicate hook entry, no stale Edit gate left behind."""
+    def _reinstall_over_matcher(self, stale_matcher: str) -> str:
+        """Install over a settings.json carrying `stale_matcher`; return the
+        single resulting matcher for the ferpa-guard entry."""
         fake_home = tempfile.mkdtemp()
         try:
             claude_dir = Path(fake_home) / ".claude"
@@ -269,7 +270,7 @@ class TestInstallScript(unittest.TestCase):
                 "hooks": {
                     "PreToolUse": [
                         {
-                            "matcher": "Read|Bash|Edit",
+                            "matcher": stale_matcher,
                             "hooks": [{"type": "command", "command": hook_command}],
                         }
                     ]
@@ -292,9 +293,19 @@ class TestInstallScript(unittest.TestCase):
                 if any("ferpa-guard" in hk.get("command", "") for hk in h.get("hooks", []))
             ]
             self.assertEqual(len(entries), 1, "duplicate hook entry created")
-            self.assertEqual(entries[0]["matcher"], "Read|Bash")
+            return entries[0]["matcher"]
         finally:
             shutil.rmtree(fake_home)
+
+    def test_reinstall_reconciles_stale_edit_matcher(self):
+        """Reinstalling over a Read|Bash|Edit entry updates the matcher in
+        place: no duplicate hook entry, no stale Edit gate left behind."""
+        self.assertEqual(self._reinstall_over_matcher("Read|Bash|Edit"), self.EXPECTED_MATCHER)
+
+    def test_reinstall_reconciles_pre_grep_matcher(self):
+        """Reinstalling over a Read|Bash entry (installs before 2026-09-06)
+        adds Grep in place (Phase 0 acceptance item 3)."""
+        self.assertEqual(self._reinstall_over_matcher("Read|Bash"), self.EXPECTED_MATCHER)
 
     def test_fresh_install_file_placement(self):
         """install.sh copies hook script, shared engine, and shared __init__.py."""

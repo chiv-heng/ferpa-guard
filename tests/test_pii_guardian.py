@@ -1210,7 +1210,7 @@ class TestDiskCacheV3(unittest.TestCase):
     def _cache_path(self, home):
         return Path(home) / ".claude" / "ferpa-guard-cache.json"
 
-    def test_writer_emits_v3(self):
+    def test_writer_emits_current_version(self):
         with tempfile.TemporaryDirectory() as home:
             Path(home, ".claude").mkdir()
             path = os.path.join(home, "emails.csv")
@@ -1223,7 +1223,8 @@ class TestDiskCacheV3(unittest.TestCase):
             self.assertEqual(result.returncode, 0)
             data = json.loads(self._cache_path(home).read_text())
             self.assertIsInstance(data, dict)
-            self.assertEqual(data["version"], 3)
+            self.assertEqual(data["version"], pg_hook._CACHE_VERSION)
+            self.assertEqual(data["version"], 4)
             self.assertIsInstance(data["entries"], list)
             self.assertGreaterEqual(len(data["entries"]), 1)
 
@@ -2778,7 +2779,7 @@ class TestScanCacheDisk(unittest.TestCase):
                 self.assertTrue(cache_path.exists(), "Disk cache file should be created")
                 data = json.loads(cache_path.read_text())
                 self.assertIsInstance(data, dict)
-                self.assertEqual(data["version"], 3)
+                self.assertEqual(data["version"], 4)
                 self.assertIsInstance(data["entries"], list)
             finally:
                 os.unlink(data_path)

@@ -63,7 +63,7 @@ if [ ! -f "$SETTINGS" ]; then
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Read|Bash",
+        "matcher": "Read|Bash|Grep",
         "hooks": [
           {
             "type": "command",
@@ -80,6 +80,8 @@ else
     # Settings file exists; check if hook is already registered
     if grep -q "ferpa-guard" "$SETTINGS" 2>/dev/null; then
         pass "Hook already registered in $SETTINGS"
+        echo "  Check that its matcher is \"Read|Bash|Grep\" (older installs used \"Read|Bash\";"
+        echo "  this script does not rewrite an existing entry, install.sh does)."
     else
         echo ""
         echo "  ~/.claude/settings.json exists but does not contain the FERPA Guard hook."
@@ -87,7 +89,7 @@ else
         echo ""
         echo '    "PreToolUse": ['
         echo '      {'
-        echo '        "matcher": "Read|Bash",'
+        echo '        "matcher": "Read|Bash|Grep",'
         echo '        "hooks": ['
         echo '          {'
         echo '            "type": "command",'

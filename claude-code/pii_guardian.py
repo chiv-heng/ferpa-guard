@@ -37,6 +37,7 @@ from shared.pii_engine import (
     decide_action,
     worst_action,
     SCANNABLE_EXTENSIONS,
+    SKIP_DIRS,
     collect_allowfile_entries,
     reader_error_finding,
     scan_incomplete_finding,
@@ -80,13 +81,23 @@ def _lexical_absolute(path: Path) -> Path:
     return Path(os.path.normpath(os.path.abspath(os.fspath(path))))
 
 
-def path_is_hard_denied(path: Path) -> bool:
-    """Check protected roots by both lexical and best-effort real containment."""
+def path_is_hard_denied(path: Path, include_ancestors: bool = False) -> bool:
+    """Check protected roots by both lexical and best-effort real containment.
+
+    With include_ancestors=True (directory-scoped tools such as Grep), a path
+    that is an ANCESTOR of a protected root is denied too: a search over a
+    parent directory reaches the protected child.
+    """
     candidate_lexical = _lexical_absolute(Path(path))
+
+    def _hit(root: Path, cand: Path) -> bool:
+        if _contains_path(root, cand):
+            return True
+        return include_ancestors and _contains_path(cand, root)
 
     for configured_root in HARD_DENY_ROOTS:
         root_lexical = _lexical_absolute(configured_root)
-        if _contains_path(root_lexical, candidate_lexical):
+        if _hit(root_lexical, candidate_lexical):
             return True
 
         # Resolve separately from the lexical check. A symlink pointing outward
@@ -97,7 +108,7 @@ def path_is_hard_denied(path: Path) -> bool:
             root_resolved = root_lexical.resolve(strict=False)
         except (OSError, RuntimeError):
             continue
-        if _contains_path(root_resolved, candidate_resolved):
+        if _hit(root_resolved, candidate_resolved):
             return True
 
     return False
@@ -112,7 +123,7 @@ def path_is_hard_denied(path: Path) -> bool:
 _CACHE_TTL = 3600
 # Disk-cache wire format version. Version 3 rejects every pre-fail-closed
 # verdict so a previously cached empty result cannot bypass fixed readers.
-_CACHE_VERSION = 3
+_CACHE_VERSION = 4  # v4 (2026-09-06): flush pre-Phase-0 verdicts that scanned commented workbooks as clean
 _DISK_CACHE_PATH = Path.home() / ".claude" / "ferpa-guard-cache.json"
 
 # In-memory cache: { (path, mtime, size): { "findings": [...], "cached_at": float } }
@@ -234,32 +245,323 @@ _METADATA_COMMANDS = {
     "ls", "wc", "stat", "file", "du", "find",
     "mv", "cp", "rm", "mkdir", "chmod", "chown", "touch",
     "ln", "readlink", "realpath", "basename", "dirname",
+    "tee",  # writes its operands, reads only stdin
 }
 
 
-def _is_content_command(cmd: str) -> bool:
-    """Return True if the Bash command reads file content into stdout.
+# Tokens that wrap another command; strip them before classifying a segment.
+_COMMAND_WRAPPERS = {
+    "sudo", "env", "nohup", "time", "command", "builtin", "exec", "nice",
+    "xargs", "if", "then", "else", "elif", "do", "while", "until", "for",
+}
 
-    Extracts the first token (the command name) and checks it against
-    known content-reading vs metadata-only command sets. Unknown commands
-    default to True (scan conservatively).
+# Segments that are pure shell syntax with nothing to classify or scan.
+_SHELL_NOOP_TOKENS = {"", "done", "fi", "esac", "then", "else", "do"}
+
+_ENV_ASSIGNMENT = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*=\S*\s*')
+
+
+def _split_shell_segments(cmd: str) -> list[str]:
+    """Split a shell command line into simple-command segments.
+
+    Splits on UNQUOTED control operators only: newline, ';', '&&', '||',
+    '|', '|&', and a control '&'. Redirection forms that contain '&'
+    ('>&', '<&', '&>', '&>>', and 'n>&m') never split. Nothing inside
+    single quotes, double quotes, backticks, or $(...) splits. Top-level
+    '(', ')', '{', '}' are treated as whitespace so grouped commands are
+    still seen. Each segment keeps its original text; empty ones are dropped.
     """
-    # Strip leading env assignments (FOO=bar cmd ...) and sudo
-    stripped = cmd.lstrip()
-    while re.match(r'^[A-Za-z_][A-Za-z0-9_]*=\S+\s+', stripped):
-        stripped = re.sub(r'^[A-Za-z_][A-Za-z0-9_]*=\S+\s+', '', stripped)
-    if stripped.startswith("sudo "):
-        stripped = stripped[5:].lstrip()
+    segments: list[str] = []
+    buf: list[str] = []
+    n = len(cmd)
+    i = 0
+    in_single = in_double = in_backtick = False
+    subst_depth = 0
 
-    # Get first word (the command)
-    first_word = stripped.split()[0] if stripped.split() else ""
-    # Strip path prefix (e.g., /usr/bin/cat -> cat)
-    cmd_name = first_word.rsplit("/", 1)[-1]
+    def flush():
+        seg = "".join(buf).strip()
+        if seg:
+            segments.append(seg)
+        buf.clear()
 
-    if cmd_name in _METADATA_COMMANDS:
-        return False
-    # Content commands and unknown commands both return True (conservative)
-    return True
+    while i < n:
+        c = cmd[i]
+        nxt = cmd[i + 1] if i + 1 < n else ""
+
+        if in_single:
+            buf.append(c)
+            if c == "'":
+                in_single = False
+            i += 1
+            continue
+        if c == "\\" and not in_single:
+            # Escaped character: keep both, never an operator.
+            buf.append(c)
+            if i + 1 < n:
+                buf.append(nxt)
+            i += 2
+            continue
+        if in_double:
+            buf.append(c)
+            if c == '"':
+                in_double = False
+            i += 1
+            continue
+        if in_backtick:
+            buf.append(c)
+            if c == "`":
+                in_backtick = False
+            i += 1
+            continue
+        if c == "'":
+            in_single = True
+            buf.append(c)
+            i += 1
+            continue
+        if c == '"':
+            in_double = True
+            buf.append(c)
+            i += 1
+            continue
+        if c == "`":
+            in_backtick = True
+            buf.append(c)
+            i += 1
+            continue
+        if c == "$" and nxt == "(":
+            subst_depth += 1
+            buf.append("$(")
+            i += 2
+            continue
+        if subst_depth:
+            if c == "(":
+                subst_depth += 1
+            elif c == ")":
+                subst_depth -= 1
+            buf.append(c)
+            i += 1
+            continue
+
+        # Top level, unquoted.
+        if c == "\n" or c == ";":
+            flush()
+            i += 1
+            continue
+        if c == "|":
+            flush()
+            i += 2 if nxt in ("|", "&") else 1
+            continue
+        if c == "&":
+            prev = cmd[i - 1] if i > 0 else ""
+            if nxt == "&":
+                flush()
+                i += 2
+                continue
+            if prev in (">", "<") or nxt == ">":
+                buf.append(c)          # redirection, not a control operator
+                i += 1
+                continue
+            flush()                    # background '&'
+            i += 1
+            continue
+        if c in "(){}":
+            buf.append(" ")
+            i += 1
+            continue
+        buf.append(c)
+        i += 1
+
+    flush()
+    return segments
+
+
+def _segment_command_name(segment: str) -> str:
+    """Return the command name of a segment after stripping wrappers.
+
+    Handles leading env assignments (FOO=bar cmd), sudo/env/time/xargs and
+    shell keywords (for/do/if/then ...), leading '!' and path prefixes
+    (/usr/bin/cat -> cat). Returns '' for pure-syntax segments.
+    """
+    rest = segment.strip()
+    for _ in range(16):  # bounded: wrappers nest only a few deep in practice
+        rest = rest.lstrip("! \t")
+        m = _ENV_ASSIGNMENT.match(rest)
+        while m:
+            rest = rest[m.end():]
+            m = _ENV_ASSIGNMENT.match(rest)
+        parts = rest.split(None, 1)
+        if not parts:
+            return ""
+        token = parts[0].rsplit("/", 1)[-1]
+        if token in _COMMAND_WRAPPERS:
+            rest = parts[1] if len(parts) > 1 else ""
+            continue
+        return token
+    return token
+
+
+def _is_content_command(cmd: str) -> bool:
+    """Return True if ANY segment of the Bash command reads file content.
+
+    Each simple command in a compound line is classified on its own, so
+    'ls ; cat roster.csv' is a content command. Metadata-only commands (ls,
+    wc, mv, ...) return False; content commands and unknown commands return
+    True (scan conservatively).
+    """
+    for segment in _split_shell_segments(cmd):
+        name = _segment_command_name(segment)
+        if name in _SHELL_NOOP_TOKENS:
+            continue
+        if name not in _METADATA_COMMANDS:
+            return True
+    return False
+
+
+def _segment_is_content(segment: str) -> bool:
+    name = _segment_command_name(segment)
+    return name not in _SHELL_NOOP_TOKENS and name not in _METADATA_COMMANDS
+
+
+_DATA_EXTS = "|".join(e.lstrip(".") for e in SCANNABLE_EXTENSIONS)
+
+
+def _extract_bash_segment_paths(segment: str) -> list[str]:
+    """Run the Bash path regexes over ONE simple-command segment."""
+    paths: list[str] = []
+    data_exts = _DATA_EXTS
+
+    # Extract paths from common file-reading commands. A quoted operand is
+    # taken whole (paths with spaces), an unquoted one up to the next
+    # separator; no phantom prefix path is produced for quoted operands.
+    reading_cmds = r"(?:cat|head|tail|less|more|bat)\s+"
+    for dq, sq, bare in re.findall(
+        rf"{reading_cmds}(?:-\S+\s+)*(?:\"([^\"]+)\"|'([^']+)'|([^\s\"'|;>]+))", segment
+    ):
+        paths.append(dq or sq or bare)
+
+    # Processing commands (grep, sed, awk, sort, cut, etc.)
+    processing_cmds = r"(?:grep|egrep|fgrep|sed|awk|sort|cut|diff|comm|paste|join|uniq|tr)\s+"
+    paths.extend(re.findall(
+        rf"{processing_cmds}(?:-\S+\s+)*(?:\"[^\"]*\"\s+|'[^']*'\s+)*[\"']?([^\s\"'|;>]+\.(?:{data_exts}))[\"']?",
+        segment,
+    ))
+
+    # Catch explicit file paths in quoted strings for data extensions
+    paths.extend(re.findall(rf"[\"']([^\"']+\.(?:{data_exts}))[\"']", segment))
+
+    # Input redirects (< file.csv) -- NOT output redirects (>, >>), and not
+    # the '<&' descriptor-duplication form.
+    paths.extend(re.findall(r"<(?!&)\s*[\"']?([^\s\"'|;>&]+)", segment))
+
+    # Bare unquoted data files (paths with data extensions anywhere in command)
+    # Exclude output redirect targets by requiring no preceding > or >>
+    paths.extend(re.findall(
+        rf"(?<!>\s)(?<!\S)([^\s\"'|;><]+\.(?:{data_exts}))(?=\s|$|[|;>])",
+        segment,
+    ))
+    return paths
+
+
+# ---------------------------------------------------------------------------
+# Native Grep tool (Phase 0, spec 2.2)
+# ---------------------------------------------------------------------------
+
+# Bound on directory entries consumed by the existence walk (Shortcut B).
+GREP_WALK_BUDGET = 5000
+
+# Shortcut A: a glob of exactly one non-scannable extension. Anything richer
+# (directories, **, braces, ! exclusions) is not emulated; ripgrep's glob
+# semantics are not reproduced here. Verified premise: the bundled Grep tool
+# runs its embedded ripgrep with --no-config, so no configuration can widen
+# the glob.
+_SINGLE_EXT_GLOB = re.compile(r"^\*\.([A-Za-z0-9]+)$")
+
+_GREP_SCOPE_REASON = (
+    "FERPA Guard blocked this search. It would read every matching line from a "
+    "folder that contains spreadsheet or data files. Narrow it to one file, or "
+    "add glob: \"*.py\" (or another code file type), or use the default output "
+    "mode, which lists file names only."
+)
+
+
+def grep_scope(tool_input: dict) -> str:
+    """The path Grep searches: its `path`, else the working directory."""
+    return tool_input.get("path") or os.getcwd()
+
+
+class WalkResult:
+    """verdict: True = no scannable file and complete; False = a scannable
+    file was found; None = unknown (error or budget exhausted). consumed:
+    directory entries consumed before returning."""
+
+    __slots__ = ("verdict", "consumed")
+
+    def __init__(self, verdict, consumed: int):
+        self.verdict = verdict
+        self.consumed = consumed
+
+
+def walk_finds_no_scannable(scope: str, budget: int = GREP_WALK_BUDGET) -> WalkResult:
+    """Incremental, fail-closed existence walk (Shortcut B).
+
+    Uses os.scandir over an explicit stack, never os.walk (which swallows
+    enumeration errors and materializes whole directories). Every entry
+    counts toward the budget as it is consumed. Symlinks are not followed,
+    matching ripgrep's default, but a symlink whose NAME passes should_scan
+    counts as a scannable file. Any OSError, or budget exhaustion, is an
+    unknown outcome, never an allow.
+    """
+    consumed = 0
+    stack = [scope]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as it:
+                for entry in it:
+                    if consumed >= budget:
+                        return WalkResult(None, consumed)
+                    consumed += 1
+                    try:
+                        is_link = entry.is_symlink()
+                        is_dir = (not is_link) and entry.is_dir(follow_symlinks=False)
+                    except OSError:
+                        return WalkResult(None, consumed)
+                    if is_dir:
+                        if entry.name in SKIP_DIRS:
+                            continue
+                        stack.append(entry.path)
+                        continue
+                    if should_scan(entry.path):
+                        return WalkResult(False, consumed)
+        except OSError:
+            return WalkResult(None, consumed)
+    return WalkResult(True, consumed)
+
+
+def grep_directory_verdict(scope: str, tool_input: dict) -> str:
+    """Decide a content-mode Grep over a directory: 'allow' or 'deny'.
+
+    Deny-and-narrow, with two provable allow shortcuts:
+      A. glob is exactly '*.<ext>' with a non-scannable extension and no type;
+      B. the bounded existence walk completes and finds no scannable file.
+    Everything else, including a missing scope, is denied.
+    """
+    try:
+        if not os.path.isdir(scope):
+            return "deny"
+    except OSError:
+        return "deny"
+
+    glob = tool_input.get("glob")
+    ftype = tool_input.get("type")
+    if glob and not ftype:
+        m = _SINGLE_EXT_GLOB.match(glob.strip())
+        if m and ("." + m.group(1).lower()) not in SCANNABLE_EXTENSIONS:
+            return "allow"
+
+    if walk_finds_no_scannable(scope).verdict is True:
+        return "allow"
+    return "deny"
 
 
 def extract_file_paths(tool_name: str, tool_input: dict) -> list[str]:
@@ -274,43 +576,26 @@ def extract_file_paths(tool_name: str, tool_input: dict) -> list[str]:
     elif tool_name == "Bash":
         cmd = tool_input.get("command", "")
 
-        # Skip file extraction entirely for metadata-only commands
-        if not _is_content_command(cmd):
-            return []
+        # Compound commands: classify and extract per simple-command segment,
+        # on the segment's original text. Metadata segments (ls, wc, mv ...)
+        # contribute no paths; 'ls ; cat roster.csv' still scans roster.csv.
+        for segment in _split_shell_segments(cmd):
+            if _segment_is_content(segment):
+                paths.extend(_extract_bash_segment_paths(segment))
 
-        # Build data extensions pattern (used by multiple regexes below)
-        data_exts = "|".join(e.lstrip(".") for e in SCANNABLE_EXTENSIONS)
-
-        # Extract paths from common file-reading commands
-        reading_cmds = r"(?:cat|head|tail|less|more|bat)\s+"
-        match = re.findall(rf"{reading_cmds}(?:-\S+\s+)*[\"']?([^\s\"'|;>]+)", cmd)
-        paths.extend(match)
-
-        # Processing commands (grep, sed, awk, sort, cut, etc.)
-        processing_cmds = r"(?:grep|egrep|fgrep|sed|awk|sort|cut|diff|comm|paste|join|uniq|tr)\s+"
-        proc_match = re.findall(
-            rf"{processing_cmds}(?:-\S+\s+)*(?:\"[^\"]*\"\s+|'[^']*'\s+)*[\"']?([^\s\"'|;>]+\.(?:{data_exts}))[\"']?",
-            cmd
-        )
-        paths.extend(proc_match)
-
-        # Catch explicit file paths in quoted strings for data extensions
-        csv_reads = re.findall(
-            rf"[\"']([^\"']+\.(?:{data_exts}))[\"']", cmd
-        )
-        paths.extend(csv_reads)
-
-        # Input redirects (< file.csv) -- NOT output redirects (>, >>)
-        redirect_match = re.findall(r"<\s*[\"']?([^\s\"'|;>]+)", cmd)
-        paths.extend(redirect_match)
-
-        # Bare unquoted data files (paths with data extensions anywhere in command)
-        # Exclude output redirect targets by requiring no preceding > or >>
-        bare_data_files = re.findall(
-            rf"(?<!>\s)(?<!\S)([^\s\"'|;><]+\.(?:{data_exts}))(?=\s|$|[|;>])",
-            cmd,
-        )
-        paths.extend(bare_data_files)
+    elif tool_name == "Grep":
+        # Only output_mode "content" returns matching lines to the model;
+        # the default (files_with_matches) and "count" disclose paths and
+        # counts only. A file scope is scanned like a Read. A directory
+        # scope is decided by grep_directory_verdict() in main(), never
+        # expanded into per-file scans here.
+        if tool_input.get("output_mode") == "content":
+            scope = grep_scope(tool_input)
+            try:
+                if os.path.isfile(scope):
+                    paths.append(scope)
+            except OSError:
+                pass
 
     # Deduplicate while preserving order
     seen = set()
@@ -333,6 +618,11 @@ def extract_hard_deny_candidates(tool_name: str, tool_input: dict) -> list[str]:
     if tool_name in ("Read", "Edit"):
         file_path = tool_input.get("file_path", "")
         return [file_path] if isinstance(file_path, str) and file_path else []
+    if tool_name == "Grep":
+        # The searched scope, in every output mode; ancestor containment is
+        # applied by the caller via path_is_hard_denied(include_ancestors=True).
+        scope = grep_scope(tool_input)
+        return [scope] if isinstance(scope, str) and scope else []
     if tool_name != "Bash":
         return []
 
@@ -460,6 +750,24 @@ def _operational_recovery_lines(filepath: str, findings: list[dict]) -> list[str
         None,
     )
 
+    allowlist_line = (
+        "3. If you have verified this exact file is safe, add its full path to a "
+        f"`.pii-guardian-allow` file in `{p.parent}` (takes effect immediately), or to "
+        "`~/.claude/ferpa-guard-allow.txt`."
+    )
+
+    if "XLSX_COMMENTS" in codes:
+        # Phase 0 (spec 2.3): comments are held, never read. Two ways forward
+        # that keep the original out of the model, then the allowlist.
+        return [
+            "1. Remove the comments in Excel (Review > Delete All Comments in Workbook), "
+            "save a copy, and open that.",
+            "2. Or run the built-in redactor on the file: it removes all comments and "
+            "creates a `_redacted` copy, but it only masks values its patterns detect, "
+            "so review the copy before use.",
+            allowlist_line,
+        ]
+
     if install_command:
         first = f"1. Install it: `{install_command}`, then retry."
     elif "ENCRYPTED" in codes:
@@ -470,9 +778,7 @@ def _operational_recovery_lines(filepath: str, findings: list[dict]) -> list[str
     return [
         first,
         "2. Convert the file to CSV and retry.",
-        "3. If you have verified this exact file is safe, add its full path to a "
-        f"`.pii-guardian-allow` file in `{p.parent}` (takes effect immediately), or to "
-        "`~/.claude/ferpa-guard-allow.txt`.",
+        allowlist_line,
     ]
 
 
@@ -624,17 +930,31 @@ def main():
     # reaches this check if a settings.json matcher also lists Edit.)
     hard_deny_candidates = extract_hard_deny_candidates(tool_name, tool_input)
 
-    if any(path_is_hard_denied(Path(candidate)) for candidate in hard_deny_candidates):
+    # A directory-scoped search (Grep) also reaches protected roots BELOW its
+    # scope, so ancestors of a root are denied for it as well.
+    include_ancestors = tool_name == "Grep"
+    if any(path_is_hard_denied(Path(candidate), include_ancestors=include_ancestors)
+           for candidate in hard_deny_candidates):
         output_deny(_HARD_DENY_REASON)
 
     # Guard the tools that pull file CONTENT into the model's context. Read
-    # does; Bash does (cat, grep, head). Edit does not: it pushes content the
-    # model already holds, and gating it blocked editing out an offending
-    # token -- the guard blocked its own remediation (live parity, spec Q6).
-    if tool_name not in ("Read", "Bash"):
+    # does; Bash does (cat, grep, head); Grep does in output_mode "content".
+    # Edit does not: it pushes content the model already holds, and gating it
+    # blocked editing out an offending token -- the guard blocked its own
+    # remediation (live parity, spec Q6).
+    if tool_name not in ("Read", "Bash", "Grep"):
         output_allow()
 
     file_paths = extract_file_paths(tool_name, tool_input)
+
+    # Content-mode Grep over a directory: deny-and-narrow unless provably
+    # safe (spec 2.2). Never expanded into per-file scans.
+    if tool_name == "Grep" and tool_input.get("output_mode") == "content" and not file_paths:
+        scope = grep_scope(tool_input)
+        if grep_directory_verdict(scope, tool_input) == "deny":
+            write_audit_event(AUDIT_LOG_PATH, "block", scope, ["GREP_SCOPE"])
+            output_deny(_GREP_SCOPE_REASON)
+        output_allow()
 
     if not file_paths:
         output_allow()
