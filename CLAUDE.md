@@ -8,7 +8,7 @@ K-12 AI safety layer that detects and blocks student PII before it enters LLM co
 ferpa-guard/
   shared/           # Platform-agnostic detection engine and redactor
   claude-code/      # PreToolUse hook for Claude Code users (IT/data staff)
-  cowork/           # Project config + MCP server for Claude Cowork users (ops/admin)
+  cowork/           # Project instructions + MCP server for Claude Desktop/Cowork (ops/admin); MCP needs custom-MCP rights
   chat/             # Custom instructions for Claude Chat users (teachers)
   tests/            # Test harness covering all layers
 ```
@@ -17,12 +17,19 @@ ferpa-guard/
 
 | Surface | Audience | Mechanism | Status |
 |---------|----------|-----------|--------|
-| Claude Code | IT/data directors, devs | PreToolUse hook (settings.json) | **Done** |
-| Claude Cowork | School ops, admin staff | Project instructions + MCP server | Planned |
-| Claude Chat | Teachers, general staff | Custom instructions / project knowledge | Planned |
+| Claude Code | IT/data directors, devs | PreToolUse hook (settings.json) | **Done** (the only programmatic surface) |
+| Claude Cowork / Desktop | School ops, admin staff | Project instructions + MCP server | Built, deferred (2026-08-05 reclassification) |
+| Claude Chat | Teachers, general staff | Custom instructions / project knowledge | Built, deferred; manual test only (2026-03-25) |
+| Claude K12 / Enterprise seat (admin-managed tenant) | Staff on an admin-managed seat | Project instructions + Skill, instruction-only | Assessed 2026-09-06, not built |
 | ChatGPT | Teachers | Custom GPT instructions | Future |
 | Gemini | Teachers | Gem instructions | Future |
 | Copilot | Teachers | System prompt | Future |
+
+**Status as of 2026-09-06.** FERPA Guard is internal infrastructure, not a product (decision 2026-08-05). Multi-surface work is deferred, not scheduled. An admin-managed K12 or Enterprise seat (a district's or charter network's managed Claude tenant, for example) typically has no Claude Code, no Cowork, and no custom MCP, so the `cowork/` surface cannot install there; a port to such a seat is instruction-only (Project instructions or a Skill) and must be written to the organization's policy, not to the engine's pattern list. Never run the engine inside a Skill's code sandbox: the file has already entered provider infrastructure. Any instruction surface needs an executed eval harness before deployment; none exists yet. Assessment (private Notion workspace): "FERPA Guard: K12 Seat Port Assessment (2026-09-06)" under R&D / FERPA Guard -- Project Summary.
+
+## Repo State
+
+As of 2026-09-06 evening, `origin/public-release` is at f2c18a7: the Mac Studio's fork merge, JSONL audit, and fail-closed readers are pushed. Gitignored `.planning/` phases 09 and 10 still exist only on the Studio and are unbacked. One MacBook commit (hard-deny roots for a private data directory) is being reconciled on a branch with the hardcoded home-directory path moved to the `FERPA_GUARD_HARD_DENY` environment variable. Blind spots 1 (snake_case), 2 (columnar headers), and 4 (names, airlock tier) remain open; blind spot 3 (fail-closed readers) shipped 2026-08-07. The MCP test suite passes only on a stale virtualenv; the version pin needs fixing.
 
 ## Design Principles
 
