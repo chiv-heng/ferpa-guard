@@ -31,7 +31,7 @@ ferpa-guard/
 
 ## Repo State
 
-As of 2026-09-06 evening, `origin/public-release` carries the reconciled three clone lineages: the Mac Studio's fork merge, JSONL audit, and fail-closed readers; the MacBook's hard-deny commit with its path moved to the `FERPA_GUARD_HARD_DENY` environment variable; and the docs update. Gitignored `.planning/` phases 09 and 10 still exist only on the Studio and are unbacked. Blind spots 1 (snake_case), 2 (columnar headers), and 4 (names, airlock tier) remain open; blind spot 3 (fail-closed readers) shipped 2026-08-07. The MCP test suite passes only on a stale virtualenv; the version pin needs fixing.
+As of 2026-09-06 evening, `origin/public-release` carries the reconciled three clone lineages: the Mac Studio's fork merge, JSONL audit, and fail-closed readers; the MacBook's hard-deny commit with its path moved to the `FERPA_GUARD_HARD_DENY` environment variable; and the docs update. Gitignored `.planning/` phases 09 and 10 still exist only on the Studio and are unbacked. Blind spots 1 (snake_case), 2 (columnar headers), and 4 (names, airlock tier) remain open; blind spot 3 (fail-closed readers) shipped 2026-08-07. The MCP test suite passes only on a stale virtualenv; the version pin needs fixing. **Phase 0 of the adoption review is implemented on branch `phase0/adoption-safety`** (compound Bash commands, Grep gating, xlsx comment hold, redactor verification, coverage-boundary docs; spec and Codex round log under `.planning/phases/11-adoption-phase0/`, mirrored on the Studio), pending merge and the manual Grep smoke test. The companion field-test changes in `~/dev/pii-fieldtest` are uncommitted there.
 
 ## Design Principles
 
@@ -104,7 +104,9 @@ for f in tests/test_*.py; do python3 "$f"; done
 python3 tests/test_pii_guardian.py
 ```
 
-Suites: `test_pii_guardian` (pattern detection, file readers, hook protocol, path extraction, should-scan filtering, redactor), `test_integration`, `test_mcp_tools`, `test_failclosed_readers` (unscannable-file blocking: missing dependencies, corrupt/encrypted files, scan limits, cache non-poisoning, formatter truthfulness, scan-report exit contract), and `test_david_scenarios` (persona scenarios; see `tests/PERSONA-SCENARIOS.md`).
+Suites: `test_pii_guardian` (pattern detection, file readers, hook protocol, path extraction, should-scan filtering, redactor), `test_integration` (cross-surface parity, installer matcher on fresh install and reinstall), `test_mcp_tools`, `test_failclosed_readers` (unscannable-file blocking: missing dependencies, corrupt/encrypted files, scan limits, cache non-poisoning, formatter truthfulness, scan-report exit contract), `test_hook_boundary` (compound Bash commands, the native Grep tool: output modes, directory deny-and-narrow, the fail-closed existence walk, hard-deny ancestors), `test_xlsx_comments` (comment hold, workbook properties, redactor comment stripping and title validity, poisoned-cache rejection), and `test_david_scenarios` (persona scenarios; see `tests/PERSONA-SCENARIOS.md`).
+
+Acceptance gate for hook and engine changes: `~/dev/pii-fieldtest/harness/compare_matrix.py` against the 2026-09-06 baseline TSVs (no row less protective, no missing required row). The matrix runner's own divergence count is a characterization, not the gate.
 
 ## Privacy
 

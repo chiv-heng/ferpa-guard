@@ -17,7 +17,7 @@ Claude will check any data you share for sensitive student information before pr
 ## What This Does NOT Do
 
 - This is **instruction-based**, not a programmatic block. Claude follows these rules because the instructions tell it to.
-- It provides a strong safety layer but is not guaranteed like the Claude Code hook, which blocks at the tool level.
+- It checks content the AI service has already received, so it is guidance and education, not prevention of disclosure. The Claude Code hook is different in kind: it denies covered file reads before the model sees them, within the limits its README documents.
 - It works best when teachers are aware it exists and cooperate with the guidance.
 
 ## Tips for Teachers

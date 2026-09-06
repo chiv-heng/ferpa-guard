@@ -9,7 +9,7 @@ Paste these instructions into any AI tool to add a basic safety check for studen
 - **Claude:** Projects > Project Instructions
 - **Any other LLM:** System prompt or custom instructions field
 
-**Important:** This is instruction-based protection. The AI follows these rules because you asked it to, not because they are enforced programmatically. For hard blocking that prevents student data from ever reaching the AI, use the [FERPA Guard CLI for Claude Code](https://github.com/chiv-heng/ferpa-guard).
+**Important:** This is instruction-based guidance. The AI follows these rules because you asked it to, not because they are enforced programmatically, and it checks content the AI service has already received. That makes this education and a safety net, not prevention of disclosure. For a programmatic check that denies covered file reads before the model sees them (with documented limits), use the [FERPA Guard hook for Claude Code](https://github.com/chiv-heng/ferpa-guard).
 
 ---
 

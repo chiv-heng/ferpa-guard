@@ -10,9 +10,16 @@ PreToolUse hook that scans data files for personally identifiable information
 
 ## How It Works
 
-The hook fires automatically on every **Read**, **Bash**, and **Edit** tool call.
-It extracts file paths from the tool input, scans data files for PII patterns,
-and **blocks the tool call** if sensitive data is detected.
+The hook fires automatically on every **Read**, **Bash**, and **Grep** tool call
+(Edit and Write are allow-by-design: they push content the model already holds).
+It extracts file paths from the tool input, including every part of a compound
+Bash command, scans data files for PII patterns, and **denies the tool call**
+when scanning produces a block-level finding. A Grep in `output_mode: "content"`
+over a directory is denied unless the directory provably holds no scannable
+file or the glob names a single code extension. Files it cannot check fully
+(missing library, corrupt, encrypted, past a scan limit, xlsx with cell
+comments) are held, not treated as clean. See the README's Coverage boundary
+for what is not gated.
 
 The executable script lives at `~/.claude/skills/ferpa-guard/scripts/pii_guardian.py`.
 It reads JSON on stdin (Claude Code hooks API) and returns a JSON
