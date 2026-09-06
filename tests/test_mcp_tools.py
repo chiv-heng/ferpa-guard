@@ -112,6 +112,51 @@ class TestScanFile(unittest.TestCase):
         self.assertEqual(result["action"], "allow")
         self.assertIn("empty", result["summary"].lower())
 
+    def test_reader_error_with_empty_content_blocks_before_empty_branch(self):
+        """A reader failure that yields no content must block, never 'File is empty'.
+
+        Pins the ordering in scan_file: operational findings are appended
+        before the empty-content allow branch is evaluated (Phase 0, P0-7).
+        """
+        from unittest import mock
+        from shared.pii_engine import ScanInput
+
+        csv_path = self.tmp / "unreadable.csv"
+        csv_path.write_text("placeholder so the file exists\n")
+        with mock.patch.object(
+            server, "read_file_content",
+            return_value=ScanInput(content="", reader_error="OPEN_FAILED"),
+        ):
+            result = scan_file(str(csv_path))
+
+        self.assertNotIn("error", result)
+        self.assertEqual(result["action"], "block")
+        self.assertNotIn("empty", result["summary"].lower())
+        self.assertEqual(
+            ["SCAN_READER_UNAVAILABLE"],
+            [f["pattern_name"] for f in result["findings"]],
+        )
+
+    def test_truncation_with_empty_content_blocks_before_empty_branch(self):
+        """Verified omission with no readable prefix must block, never 'File is empty'."""
+        from unittest import mock
+        from shared.pii_engine import ScanInput
+
+        csv_path = self.tmp / "truncated.csv"
+        csv_path.write_text("placeholder so the file exists\n")
+        with mock.patch.object(
+            server, "read_file_content",
+            return_value=ScanInput(content="", truncated="TEXT_LIMIT"),
+        ):
+            result = scan_file(str(csv_path))
+
+        self.assertEqual(result["action"], "block")
+        self.assertNotIn("empty", result["summary"].lower())
+        self.assertEqual(
+            ["SCAN_INCOMPLETE"],
+            [f["pattern_name"] for f in result["findings"]],
+        )
+
 
 class TestRedactFile(unittest.TestCase):
     """Tests for the redact_file MCP tool."""
