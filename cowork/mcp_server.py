@@ -312,12 +312,15 @@ def redact_file(file_path: str) -> dict:
             count = redact_text_file(path, output_path)
             unit = "lines"
     except RedactionVerificationError as exc:
-        # Post-write verification failed; the redactor already deleted the output.
+        # Post-write verification failed. The redactor deleted the output
+        # unless output_remains is set, in which case the message names it.
         timestamp = datetime.datetime.now().isoformat(timespec="seconds")
+        state = "remains" if exc.output_remains else "none"
         _write_audit_entry(
-            f"[{timestamp}] REDACT path={file_path} output=none refused={exc}"
+            f"[{timestamp}] REDACT path={file_path} output={state} refused={exc}"
         )
-        return {"error": f"{exc}; no output written."}
+        tail = "." if exc.output_remains else "; no output written."
+        return {"error": f"{exc}{tail}"}
 
     result = {
         "output_path": str(output_path),

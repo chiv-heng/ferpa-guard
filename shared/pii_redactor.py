@@ -36,10 +36,17 @@ from shared.pii_engine import PII_PATTERNS, XLSX_CORE_PROPERTIES, xlsx_comment_s
 class RedactionVerificationError(Exception):
     """Raised when a redacted output fails post-write verification.
 
-    The output file has already been deleted when this is raised. The message
-    distinguishes "could not remove all comments" (comment parts still present)
-    from "output could not be verified" (the container could not be inspected).
+    The output file has normally been deleted when this is raised. When the
+    deletion itself failed, `output_remains` is True and the message names
+    the leftover file so the caller can remove it; callers must not print
+    "no output written" in that case. The message distinguishes "could not
+    remove all comments" (comment parts still present) from "output could
+    not be verified" (the container could not be inspected).
     """
+
+    def __init__(self, message: str, output_remains: bool = False):
+        super().__init__(message)
+        self.output_remains = output_remains
 
 
 # ---------------------------------------------------------------------------
@@ -250,13 +257,19 @@ def _verify_no_comments(output_path: Path) -> None:
     status = xlsx_comment_status(output_path)
     if status == "absent":
         return
+    reason = ("Redaction could not remove all comments" if status == "present"
+              else "Redaction output could not be verified")
     try:
         Path(output_path).unlink()
     except OSError:
-        pass
-    if status == "present":
-        raise RedactionVerificationError("Redaction could not remove all comments")
-    raise RedactionVerificationError("Redaction output could not be verified")
+        # Never claim "no output written" when the unverified file is still
+        # on disk: name it so the caller can remove it.
+        raise RedactionVerificationError(
+            f"{reason}; the unverified output could not be deleted and remains at "
+            f"{output_path}. Delete it before use",
+            output_remains=True,
+        )
+    raise RedactionVerificationError(reason)
 
 
 def redact_xlsx(input_path: Path, output_path: Path) -> int:
@@ -468,7 +481,8 @@ def main():
             count = redact_text_file(input_path, output_path)
             unit = "lines"
     except RedactionVerificationError as exc:
-        print(f"Error: {exc}; no output written.")
+        tail = "." if exc.output_remains else "; no output written."
+        print(f"Error: {exc}{tail}")
         sys.exit(1)
 
     print(f"Redacted {count} {unit} -> {output_path}")

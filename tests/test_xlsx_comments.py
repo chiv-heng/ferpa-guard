@@ -477,6 +477,27 @@ class TestRedactorXlsx(unittest.TestCase):
         self.assertIn("could not be verified", str(ctx.exception))
         self.assertNotIn("could not remove", str(ctx.exception))
 
+    def test_verification_failure_that_cannot_delete_names_the_leftover(self):
+        """Review finding 2026-09-06 (GLM 5.2): when the unverified output cannot
+        be deleted, the error must say so and name the file, never 'no output
+        written'. The CLI and MCP tail follows output_remains."""
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = _write_workbook(
+                Path(tmp) / "input.xlsx", [("color", "count"), ("blue", 3)], comment_at="A2",
+            )
+            output_path = Path(tmp) / "input_redacted.xlsx"
+            with mock.patch.object(redactor, "xlsx_comment_status", return_value="present"), \
+                    mock.patch.object(Path, "unlink", side_effect=OSError("locked")):
+                with self.assertRaises(redactor.RedactionVerificationError) as ctx:
+                    redactor.redact_xlsx(input_path, output_path)
+            self.assertTrue(ctx.exception.output_remains)
+            self.assertIn("remains at", str(ctx.exception))
+            self.assertIn(str(output_path), str(ctx.exception))
+            self.assertTrue(output_path.exists())
+        # The normal path still reports deletion.
+        err = redactor.RedactionVerificationError("Redaction could not remove all comments")
+        self.assertFalse(err.output_remains)
+
 
 @_requires_openpyxl
 class TestRedactorCli(unittest.TestCase):
