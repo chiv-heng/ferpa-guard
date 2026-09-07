@@ -170,11 +170,11 @@ export FERPA_GUARD_ALLOW="/path/to/safe-template.csv,/path/to/other.json"
 /path/to/test-data/
 ```
 
-Every decision — blocks, warnings, log notes, and allowlist bypasses — is recorded as JSON lines in `~/.claude/logs/ferpa-guard-audit.jsonl` as an audit trail. Records carry pattern names and the file path, never the matched values. The path can itself be identifying (an IEP export named after a student), so treat the log as local to the machine.
+Every scan-based decision — blocks, warnings, log notes, denied directory searches, and allowlist bypasses — is recorded as JSON lines in `~/.claude/logs/ferpa-guard-audit.jsonl` as an audit trail. Hard-deny denials are deliberately not recorded, so a protected directory's path never reaches a log. Records carry pattern names and the file path, never the matched values. The path can itself be identifying (an IEP export named after a student), so treat the log as local to the machine.
 
 ## Hard-deny directories (optional)
 
-Some directories must never reach the model, whatever they contain. List them in `FERPA_GUARD_HARD_DENY` (separated by `:` on macOS and Linux). Every Read and every Bash operand under those directories is denied before any allowlist, cache, or scan runs, including metadata commands like `ls` and `wc`. The denial message never echoes the path. Edit calls are also denied under these roots when the hook matcher includes Edit (the default installer matcher is Read, Bash, and Grep).
+For directories that should be denied whatever they contain, list them in `FERPA_GUARD_HARD_DENY` (separated by `:` on macOS and Linux). For the tool calls the hook sees (Read, Bash, Grep), every operand under those directories, and every Grep scope that contains one of them, is denied before any allowlist, cache, or scan runs, including metadata commands like `ls` and `wc`. Reads by MCP tools, WebFetch, subagents, and worker processes are not gated (see Coverage boundary). The denial message never echoes the path. Edit calls are also denied under these roots when the hook matcher includes Edit (the default installer matcher is Read, Bash, and Grep).
 
 ```bash
 export FERPA_GUARD_HARD_DENY="$HOME/.local/share/private-control:/srv/protected"

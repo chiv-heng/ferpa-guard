@@ -1157,7 +1157,11 @@ def main():
             )
             continue
 
-        if not should_scan(fp):
+        # Gate on the requested name OR the resolved target: a symlink with no
+        # extension that points at roster.csv is still a read of roster.csv
+        # (review finding 2026-09-07). An extensionless regular file stays
+        # ungated by design (V2 criterion 3; documented in Coverage boundary).
+        if not should_scan(fp) and not should_scan(resolved):
             continue
 
         try:

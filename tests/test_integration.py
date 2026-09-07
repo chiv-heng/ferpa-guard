@@ -41,6 +41,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -210,11 +211,15 @@ class TestAuditLogIntegration(unittest.TestCase):
             )
 
         if _MCP_AVAILABLE:
-            legacy_log = Path.home() / ".claude" / "ferpa-guard-audit.log"
-            baseline = legacy_log.read_text() if legacy_log.exists() else ""
-            mcp_srv.scan_file(FIXTURE_PATH)
-            new_content = legacy_log.read_text()[len(baseline):]
-            self.assertIn("SCAN", new_content, "MCP scan_file did not write SCAN entry")
+            # Redirect the MCP legacy log into a temp dir too: this test must
+            # never append synthetic records to the operator's real audit log
+            # (review finding 2026-09-07).
+            with tempfile.TemporaryDirectory() as mcp_home:
+                legacy_log = Path(mcp_home) / ".claude" / "ferpa-guard-audit.log"
+                with mock.patch.object(mcp_srv, "AUDIT_LOG_PATH", legacy_log):
+                    mcp_srv.scan_file(FIXTURE_PATH)
+                self.assertTrue(legacy_log.exists(), "MCP scan_file did not write its audit log")
+                self.assertIn("SCAN", legacy_log.read_text(), "MCP scan_file did not write SCAN entry")
 
 
 # ===========================================================================
@@ -241,6 +246,23 @@ class TestInstallScript(unittest.TestCase):
         return result, fake_home
 
     EXPECTED_MATCHER = "Read|Bash|Grep"
+
+    def test_matcher_literal_consistent_across_all_sites(self):
+        """Spec 2.2: the matcher literal is identical at all four sites, so a
+        reader of any of them sees the same gate (static check, no execution)."""
+        sites = {
+            "install.sh": _project_root / "install.sh",
+            "install-reference.sh": _project_root / "claude-code" / "install-reference.sh",
+            "SKILL.md": _project_root / "claude-code" / "SKILL.md",
+        }
+        for name, path in sites.items():
+            text = path.read_text()
+            with self.subTest(site=name):
+                self.assertIn(self.EXPECTED_MATCHER, text)
+                for stale in ('"Read|Bash"', '"Read|Bash|Edit"', '"Read|Edit|Bash"'):
+                    self.assertNotIn(stale, text, f"{name} still carries stale matcher {stale}")
+        # install-reference.sh names the literal twice (create and manual branches).
+        self.assertGreaterEqual(sites["install-reference.sh"].read_text().count(self.EXPECTED_MATCHER), 2)
 
     def test_fresh_install_registers_read_bash_grep_matcher(self):
         """A fresh install registers the Read|Bash|Grep matcher (no Edit, no Write)."""

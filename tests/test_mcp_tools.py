@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 # Add project root and cowork dir to sys.path
 _project_root = str(Path(__file__).parent.parent)
@@ -28,6 +29,11 @@ class TestScanFile(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.tmp = Path(self.tmpdir.name)
+        # Keep synthetic test records out of the operator's real audit log
+        # (review finding 2026-09-07).
+        patcher = mock.patch.object(server, "AUDIT_LOG_PATH", self.tmp / "audit.log")
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def tearDown(self):
         self.tmpdir.cleanup()
@@ -164,6 +170,11 @@ class TestRedactFile(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.tmp = Path(self.tmpdir.name)
+        # Keep synthetic test records out of the operator's real audit log
+        # (review finding 2026-09-07).
+        patcher = mock.patch.object(server, "AUDIT_LOG_PATH", self.tmp / "audit.log")
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def tearDown(self):
         self.tmpdir.cleanup()

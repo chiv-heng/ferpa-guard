@@ -290,6 +290,11 @@ class TestGrepDirectoryVerdict(unittest.TestCase):
         (self.tmp / "deep" / "er").mkdir(parents=True)
         (self.tmp / "deep" / "er" / "c.csv").write_text("x\n")
         self.assertEqual("deny", self.verdict())
+        # First-hit short-circuit: the walk stops at the scannable file, having
+        # consumed only the handful of entries on the way (a.py, deep, er, c.csv).
+        result = pg_hook.walk_finds_no_scannable(str(self.tmp), budget=5000)
+        self.assertIs(result.verdict, False)
+        self.assertLessEqual(result.consumed, 4)
 
     def test_shortcut_b_symlink_named_csv_counts_as_scannable(self):
         (self.tmp / "a.py").write_text("x\n")
@@ -514,6 +519,47 @@ class TestReviewFindings2026_09_06(unittest.TestCase):
             self.assertTrue(any(r.get("action") == "bypass" for r in recs), recs)
 
 
+class TestReviewFindingsRound3(unittest.TestCase):
+    """Round 3 of the multi-model review (2026-09-07)."""
+
+    def test_extensionless_symlink_scope_is_scanned_through_its_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            home.mkdir()
+            real = Path(tmp) / "roster.csv"
+            real.write_text(BLOCKING_CSV)
+            link = Path(tmp) / "current"          # no extension
+            os.symlink(real, link)
+            # Grep content mode on the link: file scope, scanned like Read.
+            self.assertEqual([str(link)], pg_hook.extract_file_paths(
+                "Grep", {"pattern": "x", "path": str(link), "output_mode": "content"}))
+            r = run_hook("Grep", {"pattern": "x", "path": str(link), "output_mode": "content"}, home=str(home))
+            self.assertEqual(2, r.returncode, r.stderr)
+            # Read of the link is gated the same way.
+            r = run_hook("Read", {"file_path": str(link)}, home=str(home))
+            self.assertEqual(2, r.returncode, r.stderr)
+            # A symlink whose target is not scannable stays ungated.
+            code = Path(tmp) / "notes.py"
+            code.write_text("print(1)\n")
+            link2 = Path(tmp) / "latest"
+            os.symlink(code, link2)
+            r = run_hook("Read", {"file_path": str(link2)}, home=str(home))
+            self.assertEqual(0, r.returncode, r.stderr)
+
+    def test_symlink_named_like_data_but_pointing_at_code(self):
+        # Name says .csv, target is code: the name alone already gates it
+        # (conservative); confirm no crash and a clean allow after scanning.
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            home.mkdir()
+            code = Path(tmp) / "notes.py"
+            code.write_text("print(1)\n")
+            link = Path(tmp) / "x.csv"
+            os.symlink(code, link)
+            r = run_hook("Read", {"file_path": str(link)}, home=str(home))
+            self.assertEqual(0, r.returncode, r.stderr)
+
+
 class TestOperationalMessageForComments(unittest.TestCase):
     """XLSX_COMMENTS messaging: recovery names comment removal only when the
     workbook could be opened; an open failure keeps its own guidance and the
@@ -525,6 +571,7 @@ class TestOperationalMessageForComments(unittest.TestCase):
         msg = pg_hook.format_unscannable_reason("/d/book.xlsx", f)
         self.assertIn("Delete All Comments", msg)
         self.assertIn("built-in redactor", msg)
+        self.assertIn(".pii-guardian-allow", msg)   # third recovery option (spec 2.3)
         self.assertIn("Only part of the file may have been checked.", msg)
 
     def test_open_failure_with_comments_keeps_open_failure_guidance(self):

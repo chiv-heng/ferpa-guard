@@ -415,8 +415,11 @@ class TestRedactorXlsx(unittest.TestCase):
             wb = openpyxl.load_workbook(output_path)
             titles = wb.sheetnames
             wb.close()
-        self.assertIn("DOB Q1-2012", titles)
-        self.assertEqual(len(set(titles)), 2)
+        # Sheet-specific: the clean sheet keeps its exact name, the redacted
+        # sheet takes the suffix (review finding 2026-09-07: the previous
+        # assertions passed even if the two were swapped).
+        self.assertEqual(titles[1], "DOB Q1-2012")
+        self.assertEqual(titles[0], "DOB Q1-2012-2")
 
     def test_properties_are_redacted(self):
         """Spec 2.4: redact_text runs over the core properties."""
@@ -538,6 +541,31 @@ class TestRedactorCli(unittest.TestCase):
             self.assertIn("no output written.", out)
             self.assertFalse((Path(tmp) / "input_redacted.xlsx").exists())
 
+    def test_cli_refusal_on_unknown_status(self):
+        """Spec 2.4 through the CLI: an uninspectable output is refused the same way."""
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = _write_workbook(
+                Path(tmp) / "input.xlsx", [("color", "count"), ("blue", 3)], comment_at="A2",
+            )
+            with mock.patch.object(redactor, "xlsx_comment_status", return_value="unknown"):
+                code, out = self._run_main(["pii_redactor.py", str(input_path)])
+            self.assertEqual(code, 1)
+            self.assertIn("could not be verified", out)
+            self.assertIn("no output written.", out)
+            self.assertFalse((Path(tmp) / "input_redacted.xlsx").exists())
+
+    def test_cli_names_leftover_when_delete_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = _write_workbook(
+                Path(tmp) / "input.xlsx", [("color", "count"), ("blue", 3)], comment_at="A2",
+            )
+            with mock.patch.object(redactor, "xlsx_comment_status", return_value="present"), \
+                    mock.patch.object(Path, "unlink", side_effect=OSError("locked")):
+                code, out = self._run_main(["pii_redactor.py", str(input_path)])
+            self.assertEqual(code, 1)
+            self.assertIn("remains at", out)
+            self.assertNotIn("no output written", out)
+
 
 @_requires_openpyxl
 class TestMcpRedactFile(unittest.TestCase):
@@ -568,6 +596,19 @@ class TestMcpRedactFile(unittest.TestCase):
         self.assertIn("error", result)
         self.assertNotIn("output_path", result)
         self.assertIn("could not remove all comments", result["error"])
+        self.assertFalse((self.tmp / "input_redacted.xlsx").exists())
+
+    def test_redact_file_refusal_on_unknown_status(self):
+        """Spec 2.4 through the MCP tool: an uninspectable output is refused."""
+        input_path = _write_workbook(
+            self.tmp / "input.xlsx", [("color", "count"), ("blue", 3)], comment_at="A2",
+        )
+        with mock.patch.object(redactor, "xlsx_comment_status", return_value="unknown"):
+            result = self.server.redact_file(str(input_path))
+        self.assertIn("error", result)
+        self.assertNotIn("output_path", result)
+        self.assertIn("could not be verified", result["error"])
+        self.assertIn("no output written.", result["error"])
         self.assertFalse((self.tmp / "input_redacted.xlsx").exists())
 
     def test_redact_file_success_on_commented_workbook(self):
@@ -614,6 +655,36 @@ class TestHookPoisonedCache(unittest.TestCase):
         self.assertNotIn(SYNTHETIC_SSN, result.stdout + result.stderr)
         self.assertEqual(rewritten["version"], 4)
         self.assertEqual(rewritten["entries"], [])
+
+    def test_v4_clean_cache_entry_is_honored(self):
+        """Positive control for the test above (review finding 2026-09-07): an
+        identical entry at the CURRENT version is loaded and short-circuits the
+        scan, so the rejection above is provably the version check and not a
+        broken or disabled cache."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            cache_dir = home / ".claude"
+            cache_dir.mkdir(parents=True)
+            path = _write_workbook(
+                root / "commented_synthetic.xlsx", [("color", "count"), ("blue", 3)],
+                comment_at="A2", comment_text=f"synthetic {SYNTHETIC_SSN}",
+            )
+            stat = path.stat()
+            current = {
+                "version": 4,
+                "entries": [{
+                    "key": [str(path.resolve()), stat.st_mtime, stat.st_size],
+                    "findings": [],
+                    "cached_at": time.time(),
+                }],
+            }
+            cache_file = cache_dir / "ferpa-guard-cache.json"
+            cache_file.write_text(json.dumps(current))
+            result = _run_hook(path, home=home, env_extra={"FERPA_GUARD_CACHE": "1"})
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("comments", (result.stdout + result.stderr).lower())
 
 
 if __name__ == "__main__":
