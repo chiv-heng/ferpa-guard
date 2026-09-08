@@ -167,6 +167,16 @@ python3 claude-code/pii_scan_report.py /path/to/folder
 python3 claude-code/pii_scan_report.py /path/to/folder --json  # machine-readable
 ```
 
+The report's historical `blocked` JSON collection contains all files with findings, including warnings and log-only findings. Use each file's `action`, the `actions` map and `action_counts` to distinguish release decisions. Text output labels this collection Findings. Exit status is diagnostic: any finding, incomplete scan or error is nonzero, even when the release action is warn or log. Reports do not write an audit file.
+
+## Release policy
+
+The hook, MCP `scan_file` and batch report resolve `FERPA_GUARD_FLOOR` once per call. Unset or empty means `high`, preserving the default decision matrix. `critical` currently has the same effect as `high`: it cannot weaken an existing block. Opt-in `medium` additionally blocks high-confidence medium-severity value findings. Lower-confidence warnings/logs and the metadata-only cap remain unchanged. Reader holds always block.
+
+`FERPA_GUARD_STRICT` blocks any nonempty finding list on all three surfaces. For compatibility, any nonempty setting enables it, including `0` and `false`; unset or empty disables it. Strict does not alter stored confidence, make empty files sensitive, or override existing exemptions and full bypasses. Policy is recomputed on cache hits. Cache version 8 rejects older persisted findings.
+
+An invalid nonempty floor causes a sanitized `POLICY_CONFIG_INVALID` error and blocks covered scans. Configure `critical`, `high` or `medium`; the supplied invalid text is never echoed. Hook audit records and MCP scan results/audit lines include normalized floor and strict attribution. Report JSON carries the same policy alongside per-file actions.
+
 ## Bypassing (when needed)
 
 For known-safe false positives (templates, test data):
@@ -183,7 +193,7 @@ export FERPA_GUARD_ALLOW="/path/to/safe-template.csv,/path/to/other.json"
 /path/to/test-data/
 ```
 
-Every scan-based decision — blocks, warnings, log notes, denied directory searches, and allowlist bypasses — is recorded as JSON lines in `~/.claude/logs/ferpa-guard-audit.jsonl` as an audit trail. Hard-deny denials are deliberately not recorded, so a protected directory's path never reaches a log. Records carry pattern names and the file path, never the matched values. The path can itself be identifying (an IEP export named after a student), so treat the log as local to the machine.
+Every scan-based decision, including blocks, warnings, log notes, denied directory searches and allowlist bypasses, is recorded as JSON lines in `~/.claude/logs/ferpa-guard-audit.jsonl` as an audit trail. Hard-deny denials are deliberately not recorded, so a protected directory's path never reaches a log. Records carry pattern names and the file path, never the matched values. The path can itself be identifying (an IEP export named after a student), so treat the log as local to the machine.
 
 ## Hard-deny directories (optional)
 
@@ -206,7 +216,7 @@ ferpa-guard/
     SKILL.md          # Claude Code skill documentation
   chat/               # Custom instructions for Claude Chat
   cowork/             # MCP server for Claude Projects
-  tests/              # Test suite (111 tests across 9 layers)
+  tests/              # Standalone unittest suites
   install.sh          # One-command installer for Claude Code
 ```
 
@@ -229,7 +239,7 @@ python3 -m pytest tests/
 python3 tests/test_pii_guardian.py
 ```
 
-111 tests across 9 layers: pattern detection, file readers, hook protocol, path extraction, should-scan filtering, redactor (text, CSV, XLSX, JSON), confidence scoring, XLSX header awareness, and decision matrix.
+Standalone unittest suites cover patterns, bounded readers and overlap attribution, hook boundaries, MCP/report parity, redaction, confidence, release policy, audit attribution and cache behavior. Run every `tests/test_*.py` with the compatible optional dependencies installed; report skips explicitly.
 
 ## Strict mode
 

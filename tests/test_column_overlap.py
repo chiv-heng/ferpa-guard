@@ -240,7 +240,7 @@ class SurfaceCacheTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0)
                 self.assertIn('Possible sensitive data', result.stderr)
             cache = json.loads((home/'.claude/ferpa-guard-cache.json').read_text())
-            self.assertEqual(cache['version'], 7)
+            self.assertEqual(cache['version'], 8)
             stored = cache['entries'][0]['findings']
             self.assertEqual([(f['pattern_name'],f['count'],f['confidence']) for f in stored], [('LUNCH_PIN',1,'medium')])
             audit = (home/'.claude/logs/ferpa-guard-audit.jsonl').read_text()
@@ -266,11 +266,11 @@ class SurfaceCacheTests(unittest.TestCase):
             stat=path.stat();cache_path=root/'.claude/ferpa-guard-cache.json';cache_path.parent.mkdir()
             env={k:v for k,v in os.environ.items() if not k.startswith(('FERPA_GUARD_','PII_GUARDIAN_'))}
             env.update(HOME=str(root),FERPA_GUARD_CACHE='1')
-            for version in range(4,7):
+            for version in range(4,8):
                 cache_path.write_text(json.dumps({'version':version,'entries':[{'key':[str(path),stat.st_mtime,stat.st_size],'cached_at':time.time(),'findings':[]}]}))
                 result=subprocess.run([sys.executable,str(ROOT/'claude-code/pii_guardian.py')],input=json.dumps({'tool_name':'Read','tool_input':{'file_path':str(path)}}),text=True,capture_output=True,env=env)
                 self.assertEqual(result.returncode,2)
-                self.assertEqual(json.loads(cache_path.read_text())['version'],7)
+                self.assertEqual(json.loads(cache_path.read_text())['version'],8)
 
     def test_attribution_uses_identical_content_and_compiled_patterns(self):
         original=c.csv_evidence;observed=[]

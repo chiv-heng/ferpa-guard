@@ -105,7 +105,7 @@ The hook outputs a structured denial message with:
 3. How many occurrences of each type
 4. **Recovery instructions** with numbered options:
    - **Option 1:** Generate a synthetic file with the same column structure but fake values
-   - **Option 2:** Run the built-in redactor (`pii_redactor.py`) to create a safe copy with hashed/synthetic replacements. Column headers and structure are preserved. The redactor runs locally and does NOT send data to any AI model.
+   - **Option 2:** Run the built-in redactor (`pii_redactor.py`) to create a pseudonymized copy of the values its patterns detect. Column headers and structure are preserved. The redactor runs locally and does NOT send data to any AI model.
    - **Option 3:** Ask the user to identify safe columns, then strip everything else
    - **Option 4:** (Critical/high only) Allowlist bypass if the user confirms no real data is present
 
@@ -128,15 +128,23 @@ To restore pre-confidence block-everything behavior (any match = block):
 export FERPA_GUARD_STRICT=1
 ```
 
+The hook, MCP scan tool and batch report share release policy. `FERPA_GUARD_FLOOR` accepts `critical`, `high` or `medium` after trimming and lowercasing. Empty/unset defaults to `high`; `critical` cannot weaken existing high-severity blocks. `medium` additionally blocks high-confidence medium-severity values. Metadata-only caps and lower-confidence defaults remain. Invalid settings yield a sanitized blocking configuration error. Any nonempty strict setting, including `0` and `false`, blocks findings but leaves exemptions, empty scans and raw confidence unchanged. Audit/result policy fields identify the evaluated setting.
+
+CSV/TSV first-record headers and eligible XLSX first rows can bind numeric state/local student identifiers and lunch PINs. Generic internal identifiers require an independent student-specific header in the same table or sheet. Binding does not detect names or infer staff confidentiality policy. Existing regex and bound evidence count a shared physical occurrence only once; equal values in different cells remain distinct.
+
+Delimited records undergo bounded quote-aware validation before parsing, including 4,096 columns, 1,000,000 records, a 65,536-character raw header and the smaller of 1,048,576 decoded field characters or the interpreter CSV limit. XLSX row production is preflighted for 4,096 columns and cumulative 1,000,000 visited rectangular cells/rows; the original 50,000 nonempty-cell cap still applies. Ragged/malformed/over-limit input and existing comment/reader holds block release. These checks do not bound all ZIP or shared-string allocations.
+
+Redaction remains pattern-bound. Column detection does not make the redactor remove every numeric identifier, name or free-text disclosure. A redacted filename is not evidence of safe disclosure; verify a derivative built from approved columns when that is required.
+
 ## User Commands
 
 | Intent | Action |
 |--------|--------|
-| "scan this folder for PII" | Run `python3 ~/.claude/skills/ferpa-guard/scripts/pii_scan_report.py "/path/to/folder"` via Bash. Prints a full report of blocked, clean, and skipped files with severity breakdowns and redaction commands. Add `--json` for machine-readable output. |
+| "scan this folder for PII" | Run `python3 ~/.claude/skills/ferpa-guard/scripts/pii_scan_report.py "/path/to/folder"` via Bash. Prints findings, clean, unscannable and skipped files, with per-file release actions. Any finding or error produces a diagnostic nonzero exit, even for warn/log. Add `--json` for machine-readable output. |
 | "scan this file for PII" | Run the scanner manually via stdin JSON pipe |
 | "why was my file blocked?" | Explain the PII output and offer the numbered recovery options |
 | "redact this file" | Run `pii_redactor.py` from the shared/ directory on the target file |
-| "add a PII pattern" | Edit `PII_PATTERNS` dict in the scanner script |
+| "add a PII pattern" | Edit `PII_PATTERNS` in `shared/pii_engine.py` |
 | "skip this file" | Add path to `FERPA_GUARD_ALLOW` env var |
 
 ## Hook Configuration
@@ -163,7 +171,7 @@ Registered at user level in `~/.claude/settings.json`:
 
 ## Maintenance
 
-- **Add patterns:** Edit the `PII_PATTERNS` dictionary in the scanner script
+- **Add patterns:** Edit the `PII_PATTERNS` dictionary in `shared/pii_engine.py`
 - **Per-pattern context:** Set `context_keywords` on a pattern to require specific keywords
 - **Default context:** Set `min_context: True` without `context_keywords` to use the default education keyword set
 - **Change scanned extensions:** Edit `SCANNABLE_EXTENSIONS` set

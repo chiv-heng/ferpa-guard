@@ -29,6 +29,8 @@ from shared.pii_engine import (
     should_scan,
     decide_action,
     worst_action,
+    resolve_policy,
+    evaluate_policy,
     reader_error_finding,
     scan_incomplete_finding,
     SCANNABLE_EXTENSIONS,
@@ -179,6 +181,10 @@ def scan_file(file_path: str) -> dict:
     """Scan a file for student PII patterns. Returns findings with severity,
     confidence, pattern type, and count. Advisory only -- does not modify
     the file."""
+    policy = resolve_policy()
+    audit_policy = f"floor={policy.floor} strict={str(policy.strict).lower()}"
+    if policy.policy_error:
+        audit_policy += " policy_error=POLICY_CONFIG_INVALID"
     path = Path(file_path)
 
     # Validate file exists
@@ -191,25 +197,26 @@ def scan_file(file_path: str) -> dict:
         supported = ", ".join(sorted(SCANNABLE_EXTENSIONS))
         return {"error": f"Unsupported file type '{ext}'. Supported: {supported}"}
 
-    # Check optional dependency
-    dep_error = _check_optional_dep(ext)
-    if dep_error:
-        return {"error": dep_error}
-
     # Allowlist check (bypass scanning for trusted files)
     allow_source = _check_allowlist(file_path)
     if allow_source is not None:
         timestamp = datetime.datetime.now().isoformat(timespec="seconds")
         _write_audit_entry(
             f"[{timestamp}] SCAN path={file_path} findings=skipped "
-            f"action=allow_bypass source={allow_source}"
+            f"action=allow_bypass source={allow_source} {audit_policy}"
         )
         return {
             "file_path": file_path,
             "findings": [],
             "action": "allow",
+            "policy": policy.as_dict(),
             "summary": "File is on the allowlist. Scan skipped.",
         }
+
+    if policy.policy_error:
+        _write_audit_entry(f"SCAN path={file_path} action=block {audit_policy}")
+        return {"error": "POLICY_CONFIG_INVALID: floor must be critical, high or medium",
+                "action": "block", "policy": policy.as_dict()}
 
     # Read content
     scan_input = read_file_content(file_path)
@@ -221,17 +228,19 @@ def scan_file(file_path: str) -> dict:
         findings.append(scan_incomplete_finding(scan_input.truncated, file_path))
 
     if not scan_input.content and not findings:
+        _write_audit_entry(f"SCAN path={file_path} findings=0 action=allow {audit_policy}")
         return {
             "file_path": file_path,
             "findings": [],
             "action": "allow",
+            "policy": policy.as_dict(),
             "reader_error": "",
             "truncated": "",
             "summary": "File is empty.",
         }
 
     # Determine action
-    action = worst_action(findings) if findings else "allow"
+    action = evaluate_policy(findings, policy)
 
     # Build response
     result = {
@@ -249,6 +258,7 @@ def scan_file(file_path: str) -> dict:
             for f in findings
         ],
         "action": action,
+        "policy": policy.as_dict(),
         "summary": (
             f"Found {len(findings)} finding type(s). Action: {action}."
             if findings
@@ -261,7 +271,7 @@ def scan_file(file_path: str) -> dict:
     timestamp = datetime.datetime.now().isoformat(timespec="seconds")
     _write_audit_entry(
         f"[{timestamp}] SCAN path={file_path} "
-        f"findings={len(findings)} action={action} patterns={pattern_names}"
+        f"findings={len(findings)} action={action} patterns={pattern_names} {audit_policy}"
     )
 
     return result

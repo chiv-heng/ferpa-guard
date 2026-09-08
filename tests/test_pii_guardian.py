@@ -1236,7 +1236,7 @@ class TestDiskCacheV3(unittest.TestCase):
             data = json.loads(self._cache_path(home).read_text())
             self.assertIsInstance(data, dict)
             self.assertEqual(data["version"], pg_hook._CACHE_VERSION)
-            self.assertEqual(data["version"], 7)
+            self.assertEqual(data["version"], 8)
             self.assertIsInstance(data["entries"], list)
             self.assertGreaterEqual(len(data["entries"]), 1)
 
@@ -2803,7 +2803,7 @@ class TestScanCacheDisk(unittest.TestCase):
                 self.assertTrue(cache_path.exists(), "Disk cache file should be created")
                 data = json.loads(cache_path.read_text())
                 self.assertIsInstance(data, dict)
-                self.assertEqual(data["version"], 7)
+                self.assertEqual(data["version"], 8)
                 self.assertIsInstance(data["entries"], list)
             finally:
                 os.unlink(data_path)

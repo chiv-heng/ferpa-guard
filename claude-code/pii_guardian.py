@@ -36,6 +36,9 @@ from shared.pii_engine import (
     should_scan,
     decide_action,
     worst_action,
+    resolve_policy,
+    evaluate_policy,
+    policy_error_finding,
     SCANNABLE_EXTENSIONS,
     SKIP_DIRS,
     collect_allowfile_entries,
@@ -122,12 +125,12 @@ def path_is_hard_denied(path: Path, include_ancestors: bool = False) -> bool:
 
 _CACHE_TTL = 3600
 # Exact disk-cache version: older findings cannot bypass detection fixes.
-_CACHE_VERSION = 7  # Flush verdicts from before structural column evidence.
+_CACHE_VERSION = 8  # Flush findings whose confidence was mutated by old strict mode.
 _DISK_CACHE_PATH = Path.home() / ".claude" / "ferpa-guard-cache.json"
 
 # In-memory cache: { (path, mtime, size): { "findings": [...], "cached_at": float } }
 _scan_cache: dict[tuple, dict] = {}
-_OPERATIONAL_PATTERNS = {"SCAN_READER_UNAVAILABLE", "SCAN_INCOMPLETE"}
+_OPERATIONAL_PATTERNS = {"SCAN_READER_UNAVAILABLE", "SCAN_INCOMPLETE", "POLICY_CONFIG_INVALID"}
 
 
 def _has_operational_findings(findings: list[dict]) -> bool:
@@ -214,13 +217,14 @@ def _save_disk_cache() -> None:
         pass
 
 
-def _write_audit_entry(original_path: str, resolved_path: str, source: str):
+def _write_audit_entry(original_path: str, resolved_path: str, source: str, policy=None):
     """Audit an allowlist bypass: JSONL record + stderr echo. Never raises."""
     print(
         f"FERPA GUARD AUDIT: bypass resolved={resolved_path} source={source}",
         file=sys.stderr,
     )
-    write_audit_event(AUDIT_LOG_PATH, "bypass", resolved_path, [], source=source)
+    write_audit_event(AUDIT_LOG_PATH, "bypass", resolved_path, [], source=source,
+                      **(policy or resolve_policy()).as_dict())
 
 
 # ---------------------------------------------------------------------------
@@ -927,6 +931,10 @@ def format_partial_scan_reason(
 
 
 def _format_block_reason_dispatch(filepath: str, findings: list[dict]) -> str:
+    if any(f.get("pattern_name") == "POLICY_CONFIG_INVALID" for f in findings):
+        return ("FERPA Guard blocked this scan: POLICY_CONFIG_INVALID. "
+                "Set FERPA_GUARD_FLOOR to critical, high or medium. "
+                "No file contents were read.")
     operational = [
         f for f in findings if f.get("pattern_name") in _OPERATIONAL_PATTERNS
     ]
@@ -1087,6 +1095,7 @@ def main():
     if tool_name not in ("Read", "Bash", "Grep"):
         output_allow()
 
+    policy = resolve_policy()
     file_paths = extract_file_paths(tool_name, tool_input)
 
     # Allowlists (env, user file, ancestor allowfile). Loaded before the Grep
@@ -1101,10 +1110,10 @@ def main():
         resolved_scope = str(Path(scope).resolve())
         bypass = _full_bypass_source(resolved_scope, allowlist_sources, path_skip_patterns)
         if bypass is not None:
-            _write_audit_entry(scope, resolved_scope, bypass)
+            _write_audit_entry(scope, resolved_scope, bypass, policy)
             output_allow()
         if grep_directory_verdict(scope, tool_input) == "deny":
-            write_audit_event(AUDIT_LOG_PATH, "block", scope, ["GREP_SCOPE"])
+            write_audit_event(AUDIT_LOG_PATH, "block", scope, ["GREP_SCOPE"], **policy.as_dict())
             output_deny(_GREP_SCOPE_REASON)
         output_allow()
 
@@ -1113,9 +1122,6 @@ def main():
 
     # Load disk cache if enabled
     _load_disk_cache()
-
-    # Strict mode: block on ANY finding (restores pre-confidence behavior)
-    strict_mode = bool(os.environ.get("FERPA_GUARD_STRICT"))
 
     all_findings = {}
 
@@ -1139,7 +1145,7 @@ def main():
                     matched_entry = a
                     break
         if matched_entry is not None:
-            _write_audit_entry(fp, resolved, allowlist_sources[matched_entry])
+            _write_audit_entry(fp, resolved, allowlist_sources[matched_entry], policy)
             continue
 
         # Ancestor-walk allowfile (.pii-guardian-allow): the no-restart escape
@@ -1152,7 +1158,7 @@ def main():
                 break
         if allowfile_match is not None:
             _write_audit_entry(
-                fp, resolved, f"allowfile({allowfile_entries[allowfile_match]})"
+                fp, resolved, f"allowfile({allowfile_entries[allowfile_match]})", policy
             )
             continue
 
@@ -1167,6 +1173,10 @@ def main():
             if not os.path.isfile(fp):
                 continue
         except OSError:
+            continue
+
+        if policy.policy_error:
+            all_findings[fp] = [policy_error_finding()]
             continue
 
         # Check cache before scanning (FIX-02)
@@ -1200,26 +1210,13 @@ def main():
         _save_disk_cache()
         output_allow()
 
-    # Strict mode: any finding = block (restores pre-confidence behavior)
-    if strict_mode:
-        reasons = []
-        for fp, findings in all_findings.items():
-            for f in findings:
-                f["confidence"] = "high"
-            write_audit_event(
-                AUDIT_LOG_PATH, "block", fp, [f["pattern_name"] for f in findings]
-            )
-            reasons.append(_format_block_reason_dispatch(fp, findings))
-        _save_disk_cache()
-        output_deny("\n\n".join(reasons))
-
     # Partition files by their worst action
     block_files = {}
     warn_files = {}
     log_files = {}
 
     for fp, findings in all_findings.items():
-        action = worst_action(findings)
+        action = evaluate_policy(findings, policy)
         if action == "block":
             block_files[fp] = findings
         elif action == "warn":
@@ -1233,7 +1230,7 @@ def main():
     for action, files in (("block", block_files), ("warn", warn_files), ("log", log_files)):
         for fp, findings in files.items():
             write_audit_event(
-                AUDIT_LOG_PATH, action, fp, [f["pattern_name"] for f in findings]
+                AUDIT_LOG_PATH, action, fp, [f["pattern_name"] for f in findings], **policy.as_dict()
             )
 
     if block_files:

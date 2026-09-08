@@ -550,7 +550,8 @@ def read_file_content(filepath: str) -> ScanInput:
 # Scanning
 # ---------------------------------------------------------------------------
 
-def write_audit_event(log_path, action: str, file: str, patterns, source: str = None) -> None:
+def write_audit_event(log_path, action: str, file: str, patterns, source: str = None, *,
+                      floor: str = "high", strict: bool = False, policy_error: str = "") -> None:
     """Append one JSONL audit record. Never raises; never affects the decision.
 
     Records pattern NAMES only -- matched values and file content must never
@@ -563,7 +564,11 @@ def write_audit_event(log_path, action: str, file: str, patterns, source: str = 
         "action": action,
         "file": file,
         "patterns": list(patterns),
+        "floor": floor,
+        "strict": strict,
     }
+    if policy_error:
+        rec["policy_error"] = "POLICY_CONFIG_INVALID"
     if source:
         rec["source"] = source
     try:
@@ -933,3 +938,51 @@ def worst_action(findings: list[dict]) -> str:
         if _ACTION_ORDER[action] < _ACTION_ORDER[worst]:
             worst = action
     return worst
+
+
+@dataclass(frozen=True)
+class ReleasePolicy:
+    floor: str = "high"
+    strict: bool = False
+    policy_error: str = ""
+
+    def as_dict(self):
+        result = {"floor": self.floor, "strict": self.strict}
+        if self.policy_error:
+            result["policy_error"] = self.policy_error
+        return result
+
+
+def resolve_policy(environ=None) -> ReleasePolicy:
+    """Resolve once per invocation, never at import time or into cached findings."""
+    environ = os.environ if environ is None else environ
+    floor = environ.get("FERPA_GUARD_FLOOR", "").strip().lower() or "high"
+    strict = bool(environ.get("FERPA_GUARD_STRICT"))
+    if floor not in {"critical", "high", "medium"}:
+        return ReleasePolicy("invalid", strict, "POLICY_CONFIG_INVALID")
+    return ReleasePolicy(floor, strict)
+
+
+def policy_error_finding() -> dict:
+    return {"pattern_name": "POLICY_CONFIG_INVALID",
+            "description": "POLICY_CONFIG_INVALID: configure FERPA_GUARD_FLOOR as critical, high or medium",
+            "severity": "high", "confidence": "high", "count": 1,
+            "header_only": False, "is_metadata": False}
+
+
+def evaluate_policy(findings: list[dict], policy: ReleasePolicy) -> str:
+    """Add release policy without changing the default matrix or findings."""
+    if policy.policy_error:
+        return "block"
+    if not findings:
+        return "allow"
+    if policy.strict or any(f["pattern_name"] in {
+            "SCAN_READER_UNAVAILABLE", "SCAN_INCOMPLETE", "POLICY_CONFIG_INVALID"} for f in findings):
+        return "block"
+    action = worst_action(findings)
+    ranks = {"critical": 3, "high": 2, "medium": 1}
+    for f in findings:
+        if (not _is_metadata(f["pattern_name"]) and f["confidence"] == "high"
+                and ranks.get(f["severity"], 0) >= ranks[policy.floor]):
+            return "block"
+    return action

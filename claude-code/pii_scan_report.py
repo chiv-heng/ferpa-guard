@@ -21,6 +21,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from shared.pii_engine import (
     scan_content,
+    resolve_policy,
+    evaluate_policy,
     read_file_content,
     should_scan,
     reader_error_finding,
@@ -56,7 +58,11 @@ def max_confidence(findings: list[dict]) -> str:
 
 def scan_directory(directory: str) -> dict:
     """Walk a directory and scan every file. Returns categorized results."""
+    policy = resolve_policy()
     results = {
+        "policy": policy.as_dict(),
+        "actions": {},
+        "action_counts": {"allow": 0, "log": 0, "warn": 0, "block": 0},
         "directory": directory,
         "blocked": [],    # Files with PII findings
         "unscannable": [],  # Files that could not be checked completely
@@ -69,6 +75,10 @@ def scan_directory(directory: str) -> dict:
     if not dir_path.is_dir():
         print(f"Error: '{directory}' is not a directory.", file=sys.stderr)
         sys.exit(1)
+
+    if policy.policy_error:
+        results["errors"].append({"path": directory, "error": "POLICY_CONFIG_INVALID: floor must be critical, high or medium"})
+        return results
 
     for root, dirs, files in os.walk(directory):
         # Prune skipped directories in-place
@@ -83,8 +93,11 @@ def scan_directory(directory: str) -> dict:
 
             try:
                 scan_input = read_file_content(filepath)
-            except Exception as e:
-                results["errors"].append({"path": filepath, "error": str(e)})
+            except Exception:
+                results["errors"].append({"path": filepath, "error": "The file could not be read safely",
+                                          "action": "block", "policy": policy.as_dict()})
+                results["actions"][filepath] = "block"
+                results["action_counts"]["block"] += 1
                 continue
 
             findings = scan_content(scan_input.content, scan_input.header_line_indices,
@@ -94,6 +107,10 @@ def scan_directory(directory: str) -> dict:
             if scan_input.truncated:
                 findings.append(scan_incomplete_finding(scan_input.truncated, filepath))
 
+            action = evaluate_policy(findings, policy)
+            results["actions"][filepath] = action
+            results["action_counts"][action] += 1
+
             if scan_input.reader_error or scan_input.truncated:
                 findings.sort(key=severity_key)
                 results["unscannable"].append({
@@ -101,12 +118,16 @@ def scan_directory(directory: str) -> dict:
                     "reader_error": scan_input.reader_error,
                     "truncated": scan_input.truncated,
                     "findings": findings,
+                    "action": action,
+                    "policy": policy.as_dict(),
                 })
             elif findings:
                 findings.sort(key=severity_key)
                 results["blocked"].append({
                     "path": filepath,
                     "findings": findings,
+                    "action": action,
+                    "policy": policy.as_dict(),
                 })
             else:
                 results["clean"].append(filepath)
@@ -135,7 +156,7 @@ def format_text_report(results: dict) -> str:
     lines.append(f"Directory: {results['directory']}")
     lines.append(
         f"Scanned: {len(results['blocked']) + len(results['clean']) + len(results['unscannable'])} files | "
-        f"Blocked: {len(results['blocked'])} | "
+        f"Findings: {len(results['blocked'])} | "
         f"Could not check: {len(results['unscannable'])} | "
         f"Clean: {len(results['clean'])} | "
         f"Skipped: {len(results['skipped'])}"
@@ -145,14 +166,14 @@ def format_text_report(results: dict) -> str:
     if results["blocked"]:
         lines.append("")
         lines.append("-" * 60)
-        lines.append("BLOCKED (PII detected)")
+        lines.append("FINDINGS (see per-file action)")
         lines.append("-" * 60)
 
         for item in results["blocked"]:
             p = Path(item["path"])
             sev = max_severity(item["findings"]).upper()
             conf = max_confidence(item["findings"]).upper()
-            lines.append(f"  [{sev}/{conf}] {p.name}")
+            lines.append(f"  [{sev}/{conf}] {p.name} | action={item['action']}")
             lines.append(f"         {item['path']}")
 
             for f in item["findings"]:
@@ -285,6 +306,9 @@ def format_json_report(results: dict) -> str:
             "skipped": len(results["skipped"]),
             "errors": len(results["errors"]),
         },
+        "policy": results["policy"],
+        "actions": results["actions"],
+        "action_counts": results["action_counts"],
         "blocked": results["blocked"],
         "unscannable": results["unscannable"],
         "clean": results["clean"],
