@@ -61,14 +61,18 @@ class BoundEvidence:
     regex_overlap_count: int
 
 
-def qualifying(pattern, cell):
+def qualifying(pattern, cell, *, rendered=None):
     if isinstance(cell, bool):
         return False
     if isinstance(cell, float):
         if not math.isfinite(cell) or not cell.is_integer():
             return False
         cell = int(cell)
-    return isinstance(cell, (str, int)) and bool(_VALIDATORS[pattern].fullmatch(str(cell).strip()))
+        rendered = str(cell)  # Canonical integer validation, not output rendering.
+    if not isinstance(cell, (str, int)):
+        return False
+    text = str(cell) if rendered is None else rendered
+    return bool(_VALIDATORS[pattern].fullmatch(text.strip()))
 
 
 def numeric_tail(content, match, maximum):

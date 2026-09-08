@@ -134,7 +134,7 @@ When scanning produces a block-level finding, the tool:
 2. Lists what was found, grouped by severity and confidence
 3. Offers numbered alternatives:
    - **Option 1:** Generate synthetic data with the same structure
-   - **Option 2:** Run the built-in redactor to create a safe copy
+   - **Option 2:** Run the built-in redactor to mask supported patterns; bare columnar identifiers may remain. Verify an approved derivative before continuing.
    - **Option 3:** Column-level filtering (keep only safe columns)
    - **Option 4:** Allowlist bypass (if confirmed no real student data)
 4. Waits for the user to choose

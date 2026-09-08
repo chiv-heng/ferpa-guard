@@ -770,7 +770,7 @@ def format_block_reason(filepath: str, findings: list[dict]) -> str:
     user_lines.append("You have a few options:")
     user_lines.append(f"  1. Generate a synthetic {ext} file with the same structure but fake data")
     if redactor_supported:
-        user_lines.append(f"  2. Run the built-in redactor to create a safe copy (headers and structure preserved)")
+        user_lines.append("  2. Run the built-in redactor to mask supported patterns (headers and structure preserved); bare columnar identifiers may remain")
     else:
         user_lines.append(f"  2. Write a redaction script (built-in redactor does not support {ext})")
     user_lines.append("  3. Keep only specific safe columns, strip everything else")
@@ -793,7 +793,8 @@ def format_block_reason(filepath: str, findings: list[dict]) -> str:
     ]
     if redactor_supported:
         claude_lines.append(f"  Option 2: Run via Bash: python3 \"{redactor_path}\" \"{filepath}\"")
-        claude_lines.append(f"            Output: '{redacted_path}'. Read the redacted file to continue.")
+        claude_lines.append(f"            Output: '{redacted_path}'. Only supported patterns are masked; bare columnar identifiers may remain.")
+        claude_lines.append("            Verify an approved derivative before continuing.")
     else:
         claude_lines.append(f"  Option 2: Write a redaction script the user can run.")
     claude_lines.append("  Option 3: Ask user which columns are safe, write a filtering script.")

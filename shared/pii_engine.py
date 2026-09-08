@@ -364,7 +364,7 @@ def read_xlsx_file(filepath: str) -> ScanInput:
                         row_length += len(rendered)
                         cell_count += 1
                         pattern = mapping.get(cell_index) if row_idx else None
-                        if pattern and columnar.qualifying(pattern, cell):
+                        if pattern and columnar.qualifying(pattern, cell, rendered=rendered):
                             intervals.add(pattern, start, start + len(rendered))
                 if row_vals:
                     if row_idx == 0 and _looks_like_header(row):

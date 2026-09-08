@@ -272,6 +272,30 @@ class SurfaceCacheTests(unittest.TestCase):
                 self.assertEqual(result.returncode,2)
                 self.assertEqual(json.loads(cache_path.read_text())['version'],8)
 
+    def test_bound_identifier_recovery_never_promises_a_safe_copy(self):
+        from shared.pii_redactor import redact_csv
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);path=root/'synthetic.csv';path.write_text('student_number\n0000\n')
+            output=root/'synthetic_redacted.csv';redact_csv(path,output)
+            si=e.read_file_content(str(output))
+            fs=e.scan_content(si.content,si.header_line_indices,column_evidence=si.column_evidence)
+            self.assertEqual(e.worst_action(fs),'block')
+            self.assertEqual(si.column_evidence['STUDENT_ID_LABELED'].bound_count,1)
+            env={k:v for k,v in os.environ.items() if not k.startswith(('FERPA_GUARD_','PII_GUARDIAN_'))};env['HOME']=str(root)
+            proc=subprocess.run([sys.executable,str(ROOT/'claude-code/pii_guardian.py')],input=json.dumps({'tool_name':'Read','tool_input':{'file_path':str(path)}}),capture_output=True,text=True,env=env)
+            self.assertEqual(proc.returncode,2)
+            message=proc.stdout+proc.stderr
+            self.assertNotIn('safe copy',message.lower())
+            self.assertNotIn('Read the redacted file to continue',message)
+            self.assertIn('supported patterns',message)
+            self.assertIn('bare columnar identifiers may remain',message)
+            self.assertIn('Verify an approved derivative before continuing',message)
+            self.assertIn('Wait for the user to choose an option',message)
+        readme=(ROOT/'README.md').read_text()
+        self.assertNotIn('redactor to create a safe copy',readme)
+        self.assertIn('bare columnar identifiers may remain',readme)
+        self.assertIn('Verify an approved derivative before continuing',readme)
+
     def test_attribution_uses_identical_content_and_compiled_patterns(self):
         original=c.csv_evidence;observed=[]
         def trace(content, delimiter, registry):
@@ -313,6 +337,28 @@ class WorkbookOverlapTests(unittest.TestCase):
             self.assertEqual(counts(si.column_evidence,'LUNCH_PIN'),(1,1))
         si=self.read([['note','lunch_pin'],['','0000']])
         self.assertEqual(counts(si.column_evidence,'LUNCH_PIN'),(1,1))
+
+    def test_numeric_validation_reuses_the_existing_rendering(self):
+        class Numeric(int):
+            calls = 0
+            def __str__(self):
+                type(self).calls += 1
+                return super().__str__()
+        cell = Numeric(4000)
+        rendered = str(cell)
+        self.assertTrue(c.qualifying('LUNCH_PIN', cell, rendered=rendered))
+        self.assertEqual(Numeric.calls, 1)
+        self.assertTrue(c.qualifying('LUNCH_PIN', 4000.0, rendered='4000.0'))
+        self.assertFalse(c.qualifying('LUNCH_PIN', '4000.0', rendered='4000.0'))
+        self.assertFalse(c.qualifying('LUNCH_PIN', 4000.5, rendered='4000.5'))
+        self.assertFalse(c.qualifying('LUNCH_PIN', True, rendered='True'))
+        original = c.qualifying
+        def checked(pattern, value, **kwargs):
+            self.assertIn('rendered', kwargs)
+            return original(pattern, value, **kwargs)
+        with mock.patch.object(c, 'qualifying', side_effect=checked):
+            si = self.read([['lunch_pin'], [4000]])
+        self.assertEqual(counts(si.column_evidence, 'LUNCH_PIN'), (1, 1))
 
     def test_float_suffix_containment_uses_actual_rendering(self):
         text='lunch_pin\n4000.0'
