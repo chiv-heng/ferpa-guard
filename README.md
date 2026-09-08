@@ -43,7 +43,7 @@ Two options, depending on your comfort level:
 
 **Option A: MCP server (recommended)** -- Adds `scan_file` and `redact_file` tools directly to Claude Desktop.
 
-1. Clone this repo and install the MCP dependency: `pip install "mcp[cli]"`
+1. Clone this repo and install the compatible MCP dependency: `pip install "mcp[cli]>=1.30,<2"`. This adapter uses the official SDK's v1 FastMCP API; SDK v2 requires a separate migration.
 2. Add to your Claude Desktop config (`claude_desktop_config.json`):
    ```json
    {

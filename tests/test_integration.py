@@ -36,6 +36,7 @@ import atexit
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -380,5 +381,14 @@ class TestInstallScript(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+class TestMCPDependencyContract(unittest.TestCase):
+    def test_declared_sdk_stays_on_verified_fastmcp_line(self):
+        declaration = (_project_root / "pyproject.toml").read_text()
+        requirement = re.search(r'^mcp\s*=\s*\["([^"]+)"\]', declaration, re.M)
+        self.assertIsNotNone(requirement)
+        self.assertEqual(requirement.group(1), "mcp>=1.30,<2")
+        self.assertTrue(_MCP_AVAILABLE, "The verified MCP SDK must import without skips")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -5,7 +5,7 @@ description = "K-12 AI safety layer that detects and blocks student PII before i
 requires-python = ">=3.10"
 
 [project.optional-dependencies]
-mcp  = ["mcp>=1.0"]
+mcp  = ["mcp>=1.30,<2"]
 xlsx = ["openpyxl>=3.0"]
 pdf  = ["pymupdf>=1.20"]
 docx = ["python-docx>=0.8"]
