@@ -150,7 +150,7 @@ PII_PATTERNS = {
 
     # --- FERPA-Protected Fields ---
     "IEP_504_FLAG": {
-        "pattern": re.compile(r"(?i)(?<![^\W_])(?:iep|504[_\s]?plan|individualized[_\s]?education|accommodation[_\s]?plan)(?![^\W_])"),
+        "pattern": re.compile(r"(?i)(?<![^\W_])(?:iep|504[_\s]?plan|504|sped|individualized[_\s]?education|accommodation[_\s]?plan)(?![^\W_])"),
         "description": "IEP/504 plan reference (FERPA-protected)",
         "severity": "high",
         "min_context": True,

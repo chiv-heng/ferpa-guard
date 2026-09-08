@@ -77,5 +77,30 @@ class MetadataBoundaryTests(unittest.TestCase):
             self.assertGreater(json.loads(cache.read_text())['version'],4)
 
 
+class MetadataVocabularyTests(unittest.TestCase):
+    def test_504_and_sped_schema_vocabulary(self):
+        for label in ['section_504', '504_flag', 'student_504', 'sped_status', 'SPED', '504 plan']:
+            with self.subTest(label=label):
+                self.assertIn('IEP_504_FLAG', scan_names('student\n'+label))
+
+    def test_longer_numbers_and_words_do_not_match(self):
+        for label in ['15040', '5040', 'spedition', 'unsped']:
+            with self.subTest(label=label):
+                self.assertNotIn('IEP_504_FLAG', scan_names('student\n'+label))
+
+    def test_noneducation_status_and_verb_remain_silent(self):
+        self.assertNotIn('IEP_504_FLAG', scan_names('HTTP status 504; sped up the build'))
+
+    def test_education_prose_ambiguity_is_metadata(self):
+        fs=engine.scan_content('student sped to room 504')
+        self.assertIn('IEP_504_FLAG',{f['pattern_name'] for f in fs})
+        self.assertTrue(all(f['is_metadata'] for f in fs))
+        self.assertEqual(engine.worst_action(fs),'warn')
+
+    def test_ambiguous_metadata_with_value_can_block(self):
+        fs=engine.scan_content('student sped to room 504; synthetic@example.invalid')
+        self.assertEqual(engine.worst_action(fs),'block')
+
+
 if __name__ == '__main__':
     unittest.main()

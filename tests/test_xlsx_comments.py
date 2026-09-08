@@ -653,7 +653,7 @@ class TestHookPoisonedCache(unittest.TestCase):
         self.assertIn("could not check", message)
         self.assertIn("comments", message)
         self.assertNotIn(SYNTHETIC_SSN, result.stdout + result.stderr)
-        self.assertEqual(rewritten["version"], 5)
+        self.assertEqual(rewritten["version"], 6)
         self.assertEqual(rewritten["entries"], [])
 
     def test_current_clean_cache_entry_is_honored(self):
@@ -672,7 +672,7 @@ class TestHookPoisonedCache(unittest.TestCase):
             )
             stat = path.stat()
             current = {
-                "version": 5,
+                "version": 6,
                 "entries": [{
                     "key": [str(path.resolve()), stat.st_mtime, stat.st_size],
                     "findings": [],

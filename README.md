@@ -114,6 +114,8 @@ Treat this list as the control's edge. Anything outside it is covered by policy 
 
 IEP, discipline and medical metadata labels also match underscore boundaries, such as `iep_status` and `medication_notes`, when education context is present. Metadata alone retains its warning cap; a value finding in the same file can lift that cap. These labels do not establish that a student record was disclosed.
 
+The metadata vocabulary includes `504` and `sped`, so `section_504` and `sped_status` are detected in education context. These words can also occur in ordinary prose; the context gate and metadata cap reduce that ambiguity but cannot eliminate it when other values co-occur.
+
 Context-aware gating reduces false positives: education-specific patterns only fire when education keywords are present. DOB only fires near "birth"/"dob"/"born". This prevents blocking financial spreadsheets and policy documents.
 
 ## Recovery model

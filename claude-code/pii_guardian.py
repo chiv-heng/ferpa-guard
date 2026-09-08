@@ -122,7 +122,7 @@ def path_is_hard_denied(path: Path, include_ancestors: bool = False) -> bool:
 
 _CACHE_TTL = 3600
 # Exact disk-cache version: older findings cannot bypass detection fixes.
-_CACHE_VERSION = 5  # Flush verdicts from before underscore-aware metadata detection.
+_CACHE_VERSION = 6  # Flush verdicts from before the 504/sped metadata vocabulary.
 _DISK_CACHE_PATH = Path.home() / ".claude" / "ferpa-guard-cache.json"
 
 # In-memory cache: { (path, mtime, size): { "findings": [...], "cached_at": float } }
