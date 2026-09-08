@@ -14,6 +14,7 @@ import re
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from . import columnar
 
 
 @dataclass
@@ -23,6 +24,7 @@ class ScanInput:
     header_line_indices: set = field(default_factory=set)
     reader_error: str = ""
     truncated: str = ""
+    column_evidence: dict = field(default_factory=dict)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -288,6 +290,10 @@ def _xlsx_property_lines(wb) -> list[str]:
     return lines
 
 
+def _binding_patterns():
+    return {name: PII_PATTERNS[name]["pattern"] for name in columnar.DIGIT_WIDTHS}
+
+
 def read_xlsx_file(filepath: str) -> ScanInput:
     """Extract cell text from an xlsx file using openpyxl.
 
@@ -313,6 +319,7 @@ def read_xlsx_file(filepath: str) -> ScanInput:
     comment_hold = "XLSX_COMMENTS" if xlsx_comment_status(filepath) != "absent" else ""
 
     try:
+        identity = os.stat(filepath)
         wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
     except Exception:
         return ScanInput(content="", reader_error="OPEN_FAILED", truncated=comment_hold)
@@ -322,30 +329,58 @@ def read_xlsx_file(filepath: str) -> ScanInput:
     header_line_indices = set()
     reader_error = ""
     truncated = ""
+    evidence = {}
+    intervals = columnar.IntervalStore(MAX_XLSX_CELLS)
+    budget = {}
+    character_cursor = 0
+
+    def append_line(line):
+        nonlocal character_cursor
+        lines.append(line)
+        character_cursor += len(line) + 1
 
     try:
         for sheet_name in wb.sheetnames:
             ws = wb[sheet_name]
-            lines.append(f"[Sheet: {sheet_name}]")
-
-            for row_idx, row in enumerate(ws.iter_rows(values_only=True)):
+            append_line(f"[Sheet: {sheet_name}]")
+            max_row, max_column = columnar.xlsx_bounds(wb, ws, budget)
+            mapping = {}
+            if not max_row or not max_column:
+                continue
+            for row_idx, row in enumerate(ws.iter_rows(min_row=1, min_col=1,
+                    max_row=max_row, max_col=max_column, values_only=True)):
                 row_vals = []
-                for cell in row:
+                row_length = 0
+                for cell_index, cell in enumerate(row):
                     if cell is not None:
                         if cell_count >= MAX_XLSX_CELLS:
                             truncated = "XLSX_CELLS"
                             break
-                        row_vals.append(str(cell))
+                        rendered = str(cell)
+                        if row_vals:
+                            row_length += 1  # The actual flattened comma.
+                        start = character_cursor + row_length
+                        row_vals.append(rendered)
+                        row_length += len(rendered)
                         cell_count += 1
+                        pattern = mapping.get(cell_index) if row_idx else None
+                        if pattern and columnar.qualifying(pattern, cell):
+                            intervals.add(pattern, start, start + len(rendered))
                 if row_vals:
                     if row_idx == 0 and _looks_like_header(row):
                         header_line_indices.add(len(lines))
-                    lines.append(",".join(row_vals))
+                        mapping = columnar.bindings(row)
+                    append_line(",".join(row_vals))
                 if truncated:
                     break
             if truncated:
                 break
-        lines.extend(_xlsx_property_lines(wb))
+        for line in _xlsx_property_lines(wb):
+            append_line(line)
+        after = os.stat(filepath)
+        if (identity.st_dev, identity.st_ino, identity.st_size, identity.st_mtime_ns) != (
+                after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+            reader_error = "EXTRACTION_FAILED"
     except Exception:
         reader_error = "EXTRACTION_FAILED"
     finally:
@@ -357,12 +392,22 @@ def read_xlsx_file(filepath: str) -> ScanInput:
 
     if comment_hold:
         truncated = comment_hold
+    content = "\n".join(lines)
+    try:
+        if not reader_error and not truncated:
+            evidence = intervals.reduce(content, _binding_patterns())
+    except Exception:
+        reader_error = reader_error or "EXTRACTION_FAILED"
+        evidence = {}
+    finally:
+        intervals.clear()
 
     return ScanInput(
-        content="\n".join(lines),
+        content=content,
         header_line_indices=header_line_indices,
         reader_error=reader_error,
         truncated=truncated,
+        column_evidence={} if reader_error or truncated else evidence,
     )
 
 
@@ -477,7 +522,7 @@ def read_docx_file(filepath: str) -> ScanInput:
 
 def read_file_content(filepath: str) -> ScanInput:
     """Read file content using the appropriate reader for the file type."""
-    ext = Path(filepath).suffix.lower()
+    ext = Path(filepath).resolve().suffix.lower()
 
     if ext == ".xlsx":
         return read_xlsx_file(filepath)
@@ -489,7 +534,16 @@ def read_file_content(filepath: str) -> ScanInput:
         # .xls (legacy format) not supported by openpyxl; scan as binary text
         return read_text_file(filepath)
     else:
-        return read_text_file(filepath)
+        result = read_text_file(filepath)
+        if ext in (".csv", ".tsv"):
+            try:
+                evidence = columnar.csv_evidence(result.content, ',' if ext == '.csv' else '\t', _binding_patterns())
+                if not result.reader_error and not result.truncated:
+                    result.column_evidence = evidence
+            except Exception:
+                result.column_evidence = {}
+                result.reader_error = result.reader_error or "EXTRACTION_FAILED"
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -581,7 +635,8 @@ def should_scan(filepath: str) -> bool:
 
 def scan_content(content: str, header_line_indices: set = None,
                   early_exit: bool = False,
-                  skip_patterns: set = None) -> list[dict]:
+                  skip_patterns: set = None, *,
+                  column_evidence: dict = None) -> list[dict]:
     """Scan text content for PII patterns. Returns list of findings.
 
     Each finding includes confidence and header_only fields. When
@@ -594,9 +649,32 @@ def scan_content(content: str, header_line_indices: set = None,
     When skip_patterns is provided, those pattern names are excluded
     from scanning (e.g., {"SSN", "SSN_NO_DASHES"}).
     """
-    if not content:
+    if not content and not column_evidence:
         return []
 
+    evidence = column_evidence or {}
+    binding_regex_counts = {}
+    evidence_error = False
+    try:
+        if not isinstance(evidence, dict) or len(evidence) > 3:
+            raise columnar.ColumnarError()
+        for name, item in evidence.items():
+            if (name not in columnar.DIGIT_WIDTHS or not isinstance(item, columnar.BoundEvidence)
+                    or type(item.bound_count) is not int
+                    or type(item.regex_overlap_count) is not int
+                    or not 0 <= item.regex_overlap_count <= item.bound_count):
+                raise columnar.ColumnarError()
+            # This is the scanner's ordinary regex count for this pattern,
+            # computed once before early exit so invalid evidence cannot hide.
+            count = sum(1 for _ in PII_PATTERNS[name]["pattern"].finditer(content))
+            binding_regex_counts[name] = count
+            if item.regex_overlap_count > count:
+                raise columnar.ColumnarError()
+    except Exception:
+        evidence = {}
+        evidence_error = True
+    # Callers must pair evidence with the exact reader content and registry.
+    # On invalid counts, preserve all regex detections and append a safe hold.
     findings = []
     content_lower = content.lower()
 
@@ -610,7 +688,10 @@ def scan_content(content: str, header_line_indices: set = None,
         if skip_patterns and name in skip_patterns:
             continue
         # Handle context requirements
-        if spec.get("min_context"):
+        item = evidence.get(name)
+        bound_count = item.bound_count if item else 0
+        overlap_count = item.regex_overlap_count if item else 0
+        if spec.get("min_context") and not bound_count:
             # Pattern-specific context keywords override the default set
             pattern_keywords = spec.get("context_keywords")
             if pattern_keywords:
@@ -623,11 +704,12 @@ def scan_content(content: str, header_line_indices: set = None,
                     continue
 
         compiled = spec["pattern"]
-        matches = compiled.findall(content)
-        if matches:
+        regex_count = (binding_regex_counts[name] if name in binding_regex_counts
+                       else len(compiled.findall(content)))
+        if regex_count or bound_count:
             # Determine if all matches are in header lines only
             header_only = False
-            if header_line_indices and lines:
+            if header_line_indices and lines and not bound_count:
                 has_data_match = False
                 has_header_match = False
                 for line_idx, line in enumerate(lines):
@@ -642,14 +724,15 @@ def scan_content(content: str, header_line_indices: set = None,
                 "pattern_name": name,
                 "description": spec["description"],
                 "severity": spec["severity"],
-                "count": len(matches),
+                "count": regex_count + bound_count - overlap_count,
                 "confidence": "high",
                 "header_only": header_only,
                 "is_metadata": name in METADATA_PATTERNS,
+                "column_bound": bool(bound_count),
             })
 
             # Early exit: skip remaining patterns once a CRITICAL match is found
-            if early_exit and spec["severity"] == "critical":
+            if early_exit and spec["severity"] == "critical" and not evidence_error:
                 return findings
 
     # Calculate confidence scores based on count, co-occurrence, and position
@@ -657,6 +740,8 @@ def scan_content(content: str, header_line_indices: set = None,
         total_lines = content.count("\n") + 1 if content else 0
         _calculate_confidence(findings, total_lines=total_lines)
 
+    if evidence_error:
+        findings.append(reader_error_finding("EXTRACTION_FAILED", ""))
     return findings
 
 

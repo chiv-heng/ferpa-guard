@@ -122,7 +122,7 @@ def path_is_hard_denied(path: Path, include_ancestors: bool = False) -> bool:
 
 _CACHE_TTL = 3600
 # Exact disk-cache version: older findings cannot bypass detection fixes.
-_CACHE_VERSION = 6  # Flush verdicts from before the 504/sped metadata vocabulary.
+_CACHE_VERSION = 7  # Flush verdicts from before structural column evidence.
 _DISK_CACHE_PATH = Path.home() / ".claude" / "ferpa-guard-cache.json"
 
 # In-memory cache: { (path, mtime, size): { "findings": [...], "cached_at": float } }
@@ -1181,7 +1181,8 @@ def main():
         scan_input = read_file_content(fp)
         findings = scan_content(scan_input.content, scan_input.header_line_indices,
                                 early_exit=True,
-                                skip_patterns=file_skip if file_skip else None)
+                                skip_patterns=file_skip if file_skip else None,
+                                column_evidence=scan_input.column_evidence)
         if scan_input.reader_error:
             findings.append(reader_error_finding(scan_input.reader_error, fp))
         if scan_input.truncated:

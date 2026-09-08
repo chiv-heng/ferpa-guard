@@ -147,9 +147,22 @@ class TestMCPSurfaceEquivalence(unittest.TestCase):
         """Compute engine ground truth once per test."""
         scan_input = read_file_content(FIXTURE_PATH)
         self.engine_findings = scan_content(
-            scan_input.content, scan_input.header_line_indices
+            scan_input.content, scan_input.header_line_indices,
+            column_evidence=scan_input.column_evidence
         )
+        self.regex_findings = scan_content(scan_input.content, scan_input.header_line_indices)
+        self.assertFalse(scan_input.reader_error)
+        self.assertFalse(scan_input.truncated)
         self.mcp_result = mcp_srv.scan_file(FIXTURE_PATH)
+
+    def test_binding_preserves_all_legacy_regex_detections(self):
+        combined = {f["pattern_name"]: f for f in self.engine_findings}
+        for legacy in self.regex_findings:
+            self.assertIn(legacy["pattern_name"], combined)
+            current = combined[legacy["pattern_name"]]
+            self.assertEqual(current["severity"], legacy["severity"])
+            self.assertGreaterEqual(current["count"], legacy["count"])
+        self.assertTrue(any(f.get("column_bound") for f in self.engine_findings))
 
     def test_mcp_detects_same_patterns_as_engine(self):
         """MCP and engine detect the same set of pattern names."""

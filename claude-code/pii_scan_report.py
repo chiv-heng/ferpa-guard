@@ -87,7 +87,8 @@ def scan_directory(directory: str) -> dict:
                 results["errors"].append({"path": filepath, "error": str(e)})
                 continue
 
-            findings = scan_content(scan_input.content, scan_input.header_line_indices)
+            findings = scan_content(scan_input.content, scan_input.header_line_indices,
+                                    column_evidence=scan_input.column_evidence)
             if scan_input.reader_error:
                 findings.append(reader_error_finding(scan_input.reader_error, filepath))
             if scan_input.truncated:

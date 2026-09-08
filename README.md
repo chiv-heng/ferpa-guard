@@ -116,6 +116,15 @@ IEP, discipline and medical metadata labels also match underscore boundaries, su
 
 The metadata vocabulary includes `504` and `sped`, so `section_504` and `sped_status` are detected in education context. These words can also occur in ordinary prose; the context gate and metadata cap reduce that ambiguity but cannot eliminate it when other values co-occur.
 
+CSV, TSV and XLSX scans also bind numeric cells to recognized identifier headers. Only the first logical CSV/TSV record, or the first XLSX row when it passes the existing header heuristic, supplies schema context. Supported aliases are `sasid`, `state_studentnumber`, `student_id`, `pupil_id`, `sis_id`, `ps_id`, `student_number`/`studentNumber`, and `lunch_pin`/`meal_pin`/`cafeteria_pin`. Header lookup ignores ASCII case, spaces, underscores and hyphens. Generic `dcid`, `personID` and `stateID` require an independent student-specific identifier header in the same table or sheet; a school name, teacher field or sheet title is insufficient. `lunch_id`, names and arbitrary prefixed aliases are not supported.
+
+Whole-cell numeric domains are 6-12 digits for state student identifiers, 4-10 for local student identifiers and 4-6 for lunch PINs. XLSX integer and finite integral float cells can qualify; booleans, dates, fractions and formulas without cached values do not. These are limited detection rules, not vendor certification. A header-only file remains metadata. Bound state/local identifiers inherit their existing high-confidence floors; a single lunch PIN retains normal scoring and can warn.
+
+Regex and bound counts are merged by physical occurrence: subtract an overlap only when an actual regex match's numeric tail is contained in the qualifying cell's source interval. Equal text in different cells still counts separately. CSV attribution keeps only the current row's intervals and lazy regex cursors. XLSX attribution temporarily uses at most 50,000 compact interval pairs (800,000 payload bytes) and returns only aggregate counts. It adds a lazy regex pass; performance is not inferred from these memory bounds.
+
+CSV/TSV admission checks quoting and decoded lengths before allocating a parsed row: at most 4,096 columns, 1,000,000 logical records, 65,536 raw header characters and the smaller of 1,048,576 decoded characters per field or the interpreter's existing CSV field limit. The existing 32,000,000-character text limit remains. XLSX preflights worksheet XML before bounded row production, including sparse gaps and missing or understated dimensions: at most 4,096 columns, 1,000,000 visited rectangular cells/rows across sheets, and the existing 50,000 nonempty-cell extraction cap. Malformed, ragged or over-limit structures discard supplemental evidence and hold the file. Existing comment and reader holds remain. These bounds do not cover all ZIP, shared-string or openpyxl allocations.
+
+
 Context-aware gating reduces false positives: education-specific patterns only fire when education keywords are present. DOB only fires near "birth"/"dob"/"born". This prevents blocking financial spreadsheets and policy documents.
 
 ## Recovery model

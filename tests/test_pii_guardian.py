@@ -1157,7 +1157,7 @@ class TestMetadataSplitHook(unittest.TestCase):
             self.assertEqual(result.returncode, 0)
             self.assertIn("Possible sensitive data", result.stderr)
 
-    def test_metadata_spaced_csv_warns_not_blocks(self):
+    def test_metadata_spaced_csv_with_bound_values_blocks(self):
         content = (
             "student number,iep status,section 504,suspension count,medication notes,allergy list\n"
             "5000000,Y,N,N,N,Y\n5000001,N,N,Y,Y,N\n5000002,N,Y,N,N,Y\n"
@@ -1168,7 +1168,19 @@ class TestMetadataSplitHook(unittest.TestCase):
             with open(path, "w") as f:
                 f.write(content)
             result = self._run_hook("Read", {"file_path": path}, env_extra={"HOME": home})
-            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("student identifier", (result.stdout + result.stderr).lower())
+            audit = Path(home) / ".claude" / "logs" / "ferpa-guard-audit.jsonl"
+            names = {name for line in audit.read_text().splitlines() for name in json.loads(line)["patterns"]}
+            self.assertIn("STUDENT_ID_LABELED", names)
+
+    def test_metadata_spaced_header_only_still_warns(self):
+        content = "student number,iep status,section 504,suspension count,medication notes,allergy list\n"
+        with tempfile.TemporaryDirectory() as home:
+            path = Path(home) / "header.csv"
+            path.write_text(content)
+            result = self._run_hook("Read", {"file_path": str(path)}, env_extra={"HOME": home})
+            self.assertEqual(result.returncode, 0)
             self.assertIn("Possible sensitive data", result.stderr)
 
     def test_metadata_plus_value_still_blocks(self):
@@ -1224,7 +1236,7 @@ class TestDiskCacheV3(unittest.TestCase):
             data = json.loads(self._cache_path(home).read_text())
             self.assertIsInstance(data, dict)
             self.assertEqual(data["version"], pg_hook._CACHE_VERSION)
-            self.assertEqual(data["version"], 6)
+            self.assertEqual(data["version"], 7)
             self.assertIsInstance(data["entries"], list)
             self.assertGreaterEqual(len(data["entries"]), 1)
 
@@ -2271,13 +2283,25 @@ class TestAuditLogging(unittest.TestCase):
         """A log-tier file writes action=log (previously an audit blind spot)."""
         with tempfile.TemporaryDirectory() as home:
             filler = "\n".join(f"row {i}, general notes here" for i in range(11))
-            data_path = self._write(home, "notes.csv", filler + "\ncall 401-555-1234\n")
+            data_path = self._write(home, "notes.csv", filler + "\ncall 401-555-1234, general notes here\n")
             result = self._run_hook("Read", {"file_path": data_path}, env_extra={"HOME": home})
             self.assertEqual(result.returncode, 0)
             records = self._audit_records(home)
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0]["action"], "log")
             self.assertIn("PHONE", records[0]["patterns"])
+
+    def test_ragged_log_fixture_now_holds_without_losing_phone(self):
+        with tempfile.TemporaryDirectory() as home:
+            filler = "\n".join(f"row {i}, general notes here" for i in range(11))
+            data_path = self._write(home, "ragged.csv", filler + "\ncall 401-555-0000\n")
+            result = self._run_hook("Read", {"file_path": data_path}, env_extra={"HOME": home})
+            self.assertEqual(result.returncode, 2)
+            records = self._audit_records(home)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["action"], "block")
+            self.assertIn("PHONE", records[0]["patterns"])
+            self.assertIn("SCAN_READER_UNAVAILABLE", records[0]["patterns"])
 
     def test_mixed_invocation_audits_all_files_before_deny(self):
         """Block + warn files in one Bash call: BOTH records land even though
@@ -2779,7 +2803,7 @@ class TestScanCacheDisk(unittest.TestCase):
                 self.assertTrue(cache_path.exists(), "Disk cache file should be created")
                 data = json.loads(cache_path.read_text())
                 self.assertIsInstance(data, dict)
-                self.assertEqual(data["version"], 6)
+                self.assertEqual(data["version"], 7)
                 self.assertIsInstance(data["entries"], list)
             finally:
                 os.unlink(data_path)

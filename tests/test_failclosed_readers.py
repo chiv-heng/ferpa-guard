@@ -6,6 +6,7 @@ test methods so this module still imports and reaches a unittest summary when
 run against the pre-fix engine.
 """
 
+import io
 import json
 import os
 import subprocess
@@ -60,13 +61,27 @@ def _write_import_failure_shim(directory, module_name):
     (Path(directory) / f"{module_name}.py").write_text("raise ImportError('synthetic missing dependency')\n")
 
 
+# Admitted structural XML for the synthetic mid-iteration failure. The real
+# preflight still runs; the producer below fails only after yielding a prefix.
+_PARTIAL_XML = (b'<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+                b'<dimension ref="A1:B2"/><sheetData><row r="1"><c r="A1"/><c r="B1"/></row>'
+                b'<row r="2"><c r="A2"/></row></sheetData></worksheet>')
+
+
 def _write_partial_xlsx_shim(directory):
     (Path(directory) / "openpyxl.py").write_text(
+        "import io\n"
+        f"XML = {_PARTIAL_XML!r}\n"
+        "class Archive:\n"
+        "    def open(self, path): return io.BytesIO(XML)\n"
         "class Sheet:\n"
-        "    def iter_rows(self, values_only=True):\n"
+        "    _worksheet_path = 'synthetic.xml'\n"
+        "    def iter_rows(self, **kwargs):\n"
+        "        assert kwargs == dict(min_row=1, min_col=1, max_row=2, max_col=2, values_only=True)\n"
         "        yield ('record', 'SSN: 123-45-6789')\n"
         f"        raise RuntimeError('{RAW_EXCEPTION_SENTINEL}')\n"
         "class Workbook:\n"
+        "    _archive = Archive()\n"
         "    sheetnames = ['Synthetic']\n"
         "    def __getitem__(self, name): return Sheet()\n"
         "    def close(self): pass\n"
@@ -146,11 +161,15 @@ class TestReaderOutcomeContract(unittest.TestCase):
     def test_mid_iteration_retains_prefix_and_both_findings(self):
         """Spec 2.1-2.2: EXTRACTION_FAILED retains and scans the extracted prefix."""
         class FakeSheet:
-            def iter_rows(self, values_only=True):
+            _worksheet_path = "synthetic.xml"
+
+            def iter_rows(self, **kwargs):
+                assert kwargs == dict(min_row=1, min_col=1, max_row=2, max_col=2, values_only=True)
                 yield ("record", "SSN: 123-45-6789")
                 raise RuntimeError(RAW_EXCEPTION_SENTINEL)
 
         class FakeWorkbook:
+            _archive = types.SimpleNamespace(open=lambda path: io.BytesIO(_PARTIAL_XML))
             sheetnames = ["Synthetic"]
 
             def __getitem__(self, name):
@@ -168,6 +187,7 @@ class TestReaderOutcomeContract(unittest.TestCase):
                 result = read_file_content(str(path))
 
         self.assertEqual(result.reader_error, "EXTRACTION_FAILED")
+        self.assertEqual(result.column_evidence, {})
         self.assertIn("123-45-6789", result.content)
         reader_error_finding = getattr(pii_engine, "reader_error_finding")
         findings = scan_content(result.content, result.header_line_indices)
