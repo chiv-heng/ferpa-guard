@@ -624,7 +624,7 @@ class TestMcpRedactFile(unittest.TestCase):
 @_requires_openpyxl
 class TestHookPoisonedCache(unittest.TestCase):
     def test_v3_clean_cache_for_commented_workbook_is_rejected(self):
-        """Spec 2.3 cache and acceptance 6: a v3 'clean' verdict is rejected; cache rewritten at v4."""
+        """A pre-comment-hold clean verdict is rejected at the current version."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"
@@ -653,10 +653,10 @@ class TestHookPoisonedCache(unittest.TestCase):
         self.assertIn("could not check", message)
         self.assertIn("comments", message)
         self.assertNotIn(SYNTHETIC_SSN, result.stdout + result.stderr)
-        self.assertEqual(rewritten["version"], 4)
+        self.assertEqual(rewritten["version"], 5)
         self.assertEqual(rewritten["entries"], [])
 
-    def test_v4_clean_cache_entry_is_honored(self):
+    def test_current_clean_cache_entry_is_honored(self):
         """Positive control for the test above (review finding 2026-09-07): an
         identical entry at the CURRENT version is loaded and short-circuits the
         scan, so the rejection above is provably the version check and not a
@@ -672,7 +672,7 @@ class TestHookPoisonedCache(unittest.TestCase):
             )
             stat = path.stat()
             current = {
-                "version": 4,
+                "version": 5,
                 "entries": [{
                     "key": [str(path.resolve()), stat.st_mtime, stat.st_size],
                     "findings": [],

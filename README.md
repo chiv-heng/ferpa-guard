@@ -112,6 +112,8 @@ Treat this list as the control's edge. Anything outside it is covered by policy 
 
 **Medium** -- Email addresses, phone numbers, home/street addresses
 
+IEP, discipline and medical metadata labels also match underscore boundaries, such as `iep_status` and `medication_notes`, when education context is present. Metadata alone retains its warning cap; a value finding in the same file can lift that cap. These labels do not establish that a student record was disclosed.
+
 Context-aware gating reduces false positives: education-specific patterns only fire when education keywords are present. DOB only fires near "birth"/"dob"/"born". This prevents blocking financial spreadsheets and policy documents.
 
 ## Recovery model

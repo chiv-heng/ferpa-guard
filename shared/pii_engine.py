@@ -150,19 +150,19 @@ PII_PATTERNS = {
 
     # --- FERPA-Protected Fields ---
     "IEP_504_FLAG": {
-        "pattern": re.compile(r"(?i)\b(?:iep|504[_\s]?plan|individualized[_\s]?education|accommodation[_\s]?plan)\b"),
+        "pattern": re.compile(r"(?i)(?<![^\W_])(?:iep|504[_\s]?plan|individualized[_\s]?education|accommodation[_\s]?plan)(?![^\W_])"),
         "description": "IEP/504 plan reference (FERPA-protected)",
         "severity": "high",
         "min_context": True,
     },
     "DISCIPLINE_RECORD": {
-        "pattern": re.compile(r"(?i)\b(?:suspen(?:sion|ded)|expel(?:led|sion)|disciplin(?:e|ary)[_\s]?(?:record|action|incident)|in[_\s]?school[_\s]?suspension|iss|oss)\b"),
+        "pattern": re.compile(r"(?i)(?<![^\W_])(?:suspen(?:sion|ded)|expel(?:led|sion)|disciplin(?:e|ary)[_\s]?(?:record|action|incident)|in[_\s]?school[_\s]?suspension|iss|oss)(?![^\W_])"),
         "description": "Disciplinary record reference",
         "severity": "high",
         "min_context": True,
     },
     "MEDICAL_INFO": {
-        "pattern": re.compile(r"(?i)\b(?:diagnos(?:is|ed)|medication|allergy|anaphyla|epinephrine|inhaler|seizure|diabetes|insulin)\b"),
+        "pattern": re.compile(r"(?i)(?<![^\W_])(?:diagnos(?:is|ed)|medication|allergy|anaphyla|epinephrine|inhaler|seizure|diabetes|insulin)(?![^\W_])"),
         "description": "Medical information",
         "severity": "high",
         "min_context": True,

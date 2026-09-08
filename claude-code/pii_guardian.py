@@ -121,9 +121,8 @@ def path_is_hard_denied(path: Path, include_ancestors: bool = False) -> bool:
 # Cache TTL: 1 hour max. Disk persistence optional via FERPA_GUARD_CACHE=1.
 
 _CACHE_TTL = 3600
-# Disk-cache wire format version. Version 3 rejects every pre-fail-closed
-# verdict so a previously cached empty result cannot bypass fixed readers.
-_CACHE_VERSION = 4  # v4 (2026-09-06): flush pre-Phase-0 verdicts that scanned commented workbooks as clean
+# Exact disk-cache version: older findings cannot bypass detection fixes.
+_CACHE_VERSION = 5  # Flush verdicts from before underscore-aware metadata detection.
 _DISK_CACHE_PATH = Path.home() / ".claude" / "ferpa-guard-cache.json"
 
 # In-memory cache: { (path, mtime, size): { "findings": [...], "cached_at": float } }
@@ -174,7 +173,7 @@ def _load_disk_cache() -> None:
         return
     try:
         data = json.loads(_DISK_CACHE_PATH.read_text())
-        # Wire format v4: {"version": 4, "entries": [...]}. Anything else is
+        # Wire format: {"version": _CACHE_VERSION, "entries": [...]}. Anything else is
         # ignored wholesale (cold cache, never migrated) because older
         # versions may contain fail-open reader verdicts.
         if not isinstance(data, dict) or data.get("version") != _CACHE_VERSION:
